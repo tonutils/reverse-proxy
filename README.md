@@ -7,6 +7,7 @@ It allows to make your website accessible via TON Network!
 ##### Download
 ```bash
 wget https://github.com/ton-utils/reverse-proxy/releases/download/v0.0.1/tonutils-reverse-proxy-linux-amd64
+chmod 777 tonutils-reverse-proxy-linux-amd64
 ```
 
 ##### Run
