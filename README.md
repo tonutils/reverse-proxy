@@ -19,7 +19,7 @@ Run with domain configuration, and follow the steps:
 
 Or run in simple mode, with .adnl domain, if you don't have .ton or .t.me domain:
 ```
-./tonutils-reverse-proxy-linux-amd64 --domain your-domain.ton 
+./tonutils-reverse-proxy-linux-amd64
 ```
 
 ##### Use
