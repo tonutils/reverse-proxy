@@ -35,6 +35,22 @@ type Config struct {
 
 var FlagDomain = flag.String("domain", "", "domain to configure")
 
+type Handler struct {
+	h http.Handler
+}
+
+func (h Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	hdr := http.Header{}
+	for k := range request.Header {
+		// exception for ton.run, make headers canonical
+		hdr.Set(k, request.Header.Get(k))
+	}
+	request.Header = hdr
+
+	log.Println("request:", request.Method, request.Host, request.RequestURI)
+	h.h.ServeHTTP(writer, request)
+}
+
 func main() {
 	flag.Parse()
 
@@ -69,15 +85,16 @@ func main() {
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(u)
-	s := rldphttp.NewServer(ed25519.NewKeyFromSeed(cfg.PrivateKey), dhtClient, proxy)
-
-	if FlagDomain != nil {
-		setupDomain(client, *FlagDomain, s.Address())
-	}
+	s := rldphttp.NewServer(ed25519.NewKeyFromSeed(cfg.PrivateKey), dhtClient, Handler{proxy})
 
 	addr, err := rldphttp.SerializeADNLAddress(s.Address())
 	if err != nil {
 		panic(err)
+	}
+	log.Println("Server's ADNL address is", addr+".adnl")
+
+	if *FlagDomain != "" {
+		setupDomain(client, *FlagDomain, s.Address())
 	}
 
 	log.Println("Starting server on", addr+".adnl")

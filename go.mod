@@ -5,7 +5,7 @@ go 1.19
 require (
 	github.com/mdp/qrterminal/v3 v3.0.0
 	github.com/sigurn/crc16 v0.0.0-20211026045750-20ab5afb07e3
-	github.com/xssnick/tonutils-go v1.4.1-0.20230104071121-ea298b3f43bf
+	github.com/xssnick/tonutils-go v1.4.1-0.20230106083652-c58b9000f753
 )
 
 require (
