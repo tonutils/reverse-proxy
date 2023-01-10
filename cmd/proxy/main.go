@@ -48,6 +48,8 @@ func (h Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	request.Header = hdr
 
 	log.Println("request:", request.Method, request.Host, request.RequestURI)
+
+	writer.Header().Set("Ton-Reverse-Proxy", "TonUtils Reverse Proxy v0.0.2")
 	h.h.ServeHTTP(writer, request)
 }
 
@@ -190,7 +192,7 @@ func setupDomain(client *liteclient.ConnectionPool, domain string, adnlAddr []by
 
 	if !bytes.Equal(domainInfo.GetSiteRecord(), adnlAddr) {
 		data := domainInfo.BuildSetSiteRecordPayload(adnlAddr).ToBOCWithFlags(false)
-		args := "?bin=" + base64.URLEncoding.EncodeToString(data) + "&amount=" + tlb.MustFromTON("0.05").NanoTON().String()
+		args := "?bin=" + base64.URLEncoding.EncodeToString(data) + "&amount=" + tlb.MustFromTON("0.02").NanoTON().String()
 
 		qrterminal.GenerateHalfBlock("ton://transfer/"+domainInfo.GetNFTAddress().String()+args, qrterminal.L, os.Stdout)
 		fmt.Println("Execute this transaction from the domain owner's wallet to setup site records.")
