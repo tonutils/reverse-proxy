@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"github.com/mdp/qrterminal/v3"
 	"github.com/sigurn/crc16"
+	"github.com/xssnick/tonutils-go/adnl"
 	"github.com/xssnick/tonutils-go/adnl/dht"
 	rldphttp "github.com/xssnick/tonutils-go/adnl/rldp/http"
 	"github.com/xssnick/tonutils-go/liteclient"
@@ -18,6 +19,7 @@ import (
 	"github.com/xssnick/tonutils-go/ton/dns"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -27,13 +29,14 @@ import (
 
 type Config struct {
 	ProxyPass  string `json:"proxy_pass"`
-	ForwardTo  string `json:"forward_to"`
 	PrivateKey []byte `json:"private_key"`
-	IP         string `json:"address"`
+	ExternalIP string `json:"external_ip"`
+	ListenIP   string `json:"listen_ip"`
 	Port       uint16 `json:"port"`
 }
 
 var FlagDomain = flag.String("domain", "", "domain to configure")
+var FlagDebug = flag.Bool("debug", false, "more logs")
 
 type Handler struct {
 	h http.Handler
@@ -49,7 +52,7 @@ func (h Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 
 	log.Println("request:", request.Method, request.Host, request.RequestURI)
 
-	writer.Header().Set("Ton-Reverse-Proxy", "TonUtils Reverse Proxy v0.0.2")
+	writer.Header().Set("Ton-Reverse-Proxy", "TonUtils Reverse Proxy v0.0.4")
 	h.h.ServeHTTP(writer, request)
 }
 
@@ -86,8 +89,14 @@ func main() {
 		panic(err)
 	}
 
+	if *FlagDebug == false {
+		adnl.Logger = func(v ...any) {}
+		// rldphttp.Logger = func(v ...any) {}
+	}
+
 	proxy := httputil.NewSingleHostReverseProxy(u)
 	s := rldphttp.NewServer(ed25519.NewKeyFromSeed(cfg.PrivateKey), dhtClient, Handler{proxy})
+	s.SetExternalIP(net.ParseIP(cfg.ExternalIP))
 
 	addr, err := rldphttp.SerializeADNLAddress(s.Address())
 	if err != nil {
@@ -100,7 +109,7 @@ func main() {
 	}
 
 	log.Println("Starting server on", addr+".adnl")
-	if err = s.ListenAndServe(fmt.Sprintf("%s:%d", cfg.IP, cfg.Port)); err != nil {
+	if err = s.ListenAndServe(fmt.Sprintf("%s:%d", cfg.ListenIP, cfg.Port)); err != nil {
 		panic(err)
 	}
 }
@@ -141,13 +150,14 @@ func loadConfig() (*Config, error) {
 		}
 		cfg.PrivateKey = srvKey.Seed()
 
-		cfg.IP, err = getPublicIP()
+		cfg.ExternalIP, err = getPublicIP()
 		if err != nil {
 			return nil, err
 		}
+		cfg.ListenIP = "0.0.0.0"
 
 		// generate consistent port
-		cfg.Port = 9000 + (crc16.Checksum([]byte(cfg.IP), crc16.MakeTable(crc16.CRC16_XMODEM)) % 5000)
+		cfg.Port = 9000 + (crc16.Checksum([]byte(cfg.ExternalIP), crc16.MakeTable(crc16.CRC16_XMODEM)) % 5000)
 
 		cfg.ProxyPass = "http://127.0.0.1:80/"
 
@@ -194,8 +204,15 @@ func setupDomain(client *liteclient.ConnectionPool, domain string, adnlAddr []by
 		data := domainInfo.BuildSetSiteRecordPayload(adnlAddr).ToBOCWithFlags(false)
 		args := "?bin=" + base64.URLEncoding.EncodeToString(data) + "&amount=" + tlb.MustFromTON("0.02").NanoTON().String()
 
+		nftData, err := domainInfo.GetNFTData(context.Background())
+		if err != nil {
+			log.Println("Failed to get domain data", domain, ":", err)
+			return
+		}
+
 		qrterminal.GenerateHalfBlock("ton://transfer/"+domainInfo.GetNFTAddress().String()+args, qrterminal.L, os.Stdout)
 		fmt.Println("Execute this transaction from the domain owner's wallet to setup site records.")
+		fmt.Println("Execute transaction from wallet:", nftData.OwnerAddress.String())
 		fmt.Println("When you've done, configuration will automatically proceed in ~10 seconds.")
 		for {
 			time.Sleep(5 * time.Second)
