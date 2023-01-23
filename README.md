@@ -30,6 +30,9 @@ Now anyone can access your TON Site! Using ADNL address or domain.
 
 If you want to change some settings, like proxy pass url - open `config.json` file, edit and restart proxy. Default proxy pass url is `http://127.0.0.1:80/`
 
+Proxy adds additional headers:
+`X-Adnl-Ip` - ip of client, and `X-Adnl-Id` - adnl id of client
+
 ### Installation on any other OS
 
 Build it from sources using `./build.sh`, and run as in the step 2 for linux. Go environment is required to build.
