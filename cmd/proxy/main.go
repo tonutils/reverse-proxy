@@ -79,7 +79,18 @@ func main() {
 		panic(err)
 	}
 
-	dhtClient, err := dht.NewClientFromConfig(ctx, netCfg)
+	_, dhtAdnlKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		panic("failed to generate ed25519 key for dht: " + err.Error())
+	}
+
+	gateway := adnl.NewGateway(dhtAdnlKey)
+	err = gateway.StartClient()
+	if err != nil {
+		panic("failed to load network config: " + err.Error())
+	}
+
+	dhtClient, err := dht.NewClientFromConfig(ctx, gateway, netCfg)
 	if err != nil {
 		panic(err)
 	}
@@ -96,7 +107,8 @@ func main() {
 
 	proxy := httputil.NewSingleHostReverseProxy(u)
 	s := rldphttp.NewServer(ed25519.NewKeyFromSeed(cfg.PrivateKey), dhtClient, Handler{proxy})
-	s.SetExternalIP(net.ParseIP(cfg.ExternalIP))
+	println("IP", cfg.ExternalIP, net.ParseIP(cfg.ExternalIP).String())
+	s.SetExternalIP(net.ParseIP(cfg.ExternalIP).To4())
 
 	addr, err := rldphttp.SerializeADNLAddress(s.Address())
 	if err != nil {
@@ -200,8 +212,9 @@ func setupDomain(client *liteclient.ConnectionPool, domain string, adnlAddr []by
 		return
 	}
 
-	if !bytes.Equal(domainInfo.GetSiteRecord(), adnlAddr) {
-		data := domainInfo.BuildSetSiteRecordPayload(adnlAddr).ToBOCWithFlags(false)
+	record, isStorage := domainInfo.GetSiteRecord()
+	if isStorage || !bytes.Equal(record, adnlAddr) {
+		data := domainInfo.BuildSetSiteRecordPayload(adnlAddr, false).ToBOCWithFlags(false)
 		args := "?bin=" + base64.URLEncoding.EncodeToString(data) + "&amount=" + tlb.MustFromTON("0.02").NanoTON().String()
 
 		nftData, err := domainInfo.GetNFTData(context.Background())
@@ -242,5 +255,10 @@ func resolve(client *dns.Client, domain string, adnlAddr []byte) (bool, error) {
 		return false, err
 	}
 
-	return bytes.Equal(domainInfo.GetSiteRecord(), adnlAddr), nil
+	record, isStorage := domainInfo.GetSiteRecord()
+	if isStorage {
+		return false, nil
+	}
+
+	return bytes.Equal(record, adnlAddr), nil
 }
