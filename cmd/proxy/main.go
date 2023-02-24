@@ -28,11 +28,12 @@ import (
 )
 
 type Config struct {
-	ProxyPass  string `json:"proxy_pass"`
-	PrivateKey []byte `json:"private_key"`
-	ExternalIP string `json:"external_ip"`
-	ListenIP   string `json:"listen_ip"`
-	Port       uint16 `json:"port"`
+	ProxyPass        string `json:"proxy_pass"`
+	PrivateKey       []byte `json:"private_key"`
+	ExternalIP       string `json:"external_ip"`
+	ListenIP         string `json:"listen_ip"`
+	NetworkConfigURL string `json:"network_config_url"`
+	Port             uint16 `json:"port"`
 }
 
 var FlagDomain = flag.String("domain", "", "domain to configure")
@@ -67,7 +68,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	netCfg, err := liteclient.GetConfigFromUrl(ctx, "https://ton-blockchain.github.io/global.config.json")
+	netCfg, err := liteclient.GetConfigFromUrl(ctx, cfg.NetworkConfigURL)
 	if err != nil {
 		panic("failed to load network config: " + err.Error())
 	}
@@ -161,6 +162,7 @@ func loadConfig() (*Config, error) {
 			return nil, err
 		}
 		cfg.PrivateKey = srvKey.Seed()
+		cfg.NetworkConfigURL = "https://ton-blockchain.github.io/global.config.json"
 
 		cfg.ExternalIP, err = getPublicIP()
 		if err != nil {
@@ -189,6 +191,11 @@ func loadConfig() (*Config, error) {
 	err = json.Unmarshal(data, &cfg)
 	if err != nil {
 		return nil, err
+	}
+
+	// backwards compatibility with old configs
+	if cfg.NetworkConfigURL == "" {
+		cfg.NetworkConfigURL = "https://ton-blockchain.github.io/global.config.json"
 	}
 
 	return &cfg, nil
