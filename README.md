@@ -1,4 +1,4 @@
-# TonUtils Reverse Proxy
+# Tonutils Reverse Proxy
 Easy to set up and use reverse proxy for TON Sites.
 It allows to make your website accessible via TON Network!
 
