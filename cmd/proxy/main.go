@@ -53,7 +53,7 @@ func (h Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 
 	log.Println("request:", request.Method, request.Host, request.RequestURI)
 
-	writer.Header().Set("Ton-Reverse-Proxy", "TonUtils Reverse Proxy v0.0.4")
+	writer.Header().Set("Ton-Reverse-Proxy", "Tonutils Reverse Proxy v0.2.0")
 	h.h.ServeHTTP(writer, request)
 }
 
@@ -108,7 +108,6 @@ func main() {
 
 	proxy := httputil.NewSingleHostReverseProxy(u)
 	s := rldphttp.NewServer(ed25519.NewKeyFromSeed(cfg.PrivateKey), dhtClient, Handler{proxy})
-	println("IP", cfg.ExternalIP, net.ParseIP(cfg.ExternalIP).String())
 	s.SetExternalIP(net.ParseIP(cfg.ExternalIP).To4())
 
 	addr, err := rldphttp.SerializeADNLAddress(s.Address())
