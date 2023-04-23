@@ -53,7 +53,7 @@ func (h Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 
 	log.Println("request:", request.Method, request.Host, request.RequestURI)
 
-	writer.Header().Set("Ton-Reverse-Proxy", "Tonutils Reverse Proxy v0.1.2")
+	writer.Header().Set("Ton-Reverse-Proxy", "Tonutils Reverse Proxy v0.2.0")
 	h.h.ServeHTTP(writer, request)
 }
 
