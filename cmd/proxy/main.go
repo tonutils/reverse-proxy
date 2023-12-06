@@ -8,6 +8,16 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+    "io"
+    "io/ioutil"
+    "log"
+    "net"
+    "net/http"
+    "net/http/httputil"
+    "net/url"
+    "os"
+    "time"
+
 	"github.com/mdp/qrterminal/v3"
 	"github.com/sigurn/crc16"
 	"github.com/xssnick/tonutils-go/adnl"
@@ -17,14 +27,6 @@ import (
 	"github.com/xssnick/tonutils-go/tlb"
 	"github.com/xssnick/tonutils-go/ton"
 	"github.com/xssnick/tonutils-go/ton/dns"
-	"io"
-	"log"
-	"net"
-	"net/http"
-	"net/http/httputil"
-	"net/url"
-	"os"
-	"time"
 )
 
 type Config struct {
@@ -37,6 +39,7 @@ type Config struct {
 }
 
 var FlagDomain = flag.String("domain", "", "domain to configure")
+var FlagConfig = flag.String("config", "./config", "set custom config file")
 var FlagDebug = flag.Bool("debug", false, "more logs")
 
 type Handler struct {
@@ -57,13 +60,43 @@ func (h Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	h.h.ServeHTTP(writer, request)
 }
 
+func createDefaultConfig(domain string) *Config {
+  var cfg Config
+
+  _, privateKey, _ := ed25519.GenerateKey(nil)
+  cfg.PrivateKey = privateKey.Seed()
+  cfg.NetworkConfigURL = "https://ton-blockchain.github.io/global.config.json"
+
+  cfg.ExternalIP, _ = getPublicIP()
+  cfg.ListenIP = "0.0.0.0"
+
+  // generate consistent port
+  cfg.Port = 9000 + (crc16.Checksum([]byte(cfg.ExternalIP), crc16.MakeTable(crc16.CRC16_XMODEM)) % 5000)
+
+  cfg.ProxyPass = "http://127.0.0.1:80/"
+
+  data, _ := json.MarshalIndent(cfg, "", "\t")
+
+  err := ioutil.WriteFile(*FlagConfig, data, 0644)
+  if err != nil {
+    panic("failed to create config file: " + err.Error())
+  }
+
+  return &cfg
+}
+
 func main() {
 	flag.Parse()
 
 	cfg, err := loadConfig()
 	if err != nil {
+    if os.IsNotExist(err) && *FlagDomain != "" {
+      // Create default config if it doesn't exist and domain flag is provided
+      cfg = createDefaultConfig(*FlagDomain)
+    } else {
 		panic("failed to load config: " + err.Error())
 	}
+  }
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -91,7 +124,7 @@ func main() {
 		panic("failed to load network config: " + err.Error())
 	}
 
-	dhtClient, err := dht.NewClientFromConfig(ctx, gateway, netCfg)
+  dhtClient, err := dht.NewClientFromConfig(gateway, netCfg)
 	if err != nil {
 		panic(err)
 	}
@@ -102,8 +135,8 @@ func main() {
 	}
 
 	if *FlagDebug == false {
-		adnl.Logger = func(v ...any) {}
-		// rldphttp.Logger = func(v ...any) {}
+    adnl.Logger = func(v ...interface{}) {}
+    // rldphttp.Logger = func(v ...interface{}) {}
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(u)
@@ -152,8 +185,8 @@ func getPublicIP() (string, error) {
 func loadConfig() (*Config, error) {
 	var cfg Config
 
-	file := "./config.json"
-	data, err := os.ReadFile(file)
+  file := *FlagConfig
+  data, err := ioutil.ReadFile(file)
 	if err != nil {
 		var srvKey ed25519.PrivateKey
 		_, srvKey, err = ed25519.GenerateKey(nil)
@@ -179,7 +212,7 @@ func loadConfig() (*Config, error) {
 			return nil, err
 		}
 
-		err = os.WriteFile(file, data, 555)
+        err = ioutil.WriteFile(file, data, 0644)
 		if err != nil {
 			return nil, err
 		}
