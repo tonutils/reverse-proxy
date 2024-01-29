@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"github.com/mdp/qrterminal/v3"
 	"github.com/sigurn/crc16"
+	"github.com/ton-utils/reverse-proxy/config"
 	"github.com/xssnick/tonutils-go/adnl"
 	"github.com/xssnick/tonutils-go/adnl/dht"
 	rldphttp "github.com/xssnick/tonutils-go/adnl/rldp/http"
@@ -46,14 +47,16 @@ type Handler struct {
 func (h Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	hdr := http.Header{}
 	for k := range request.Header {
-		// exception for ton.run, make headers canonical
-		hdr.Set(k, request.Header.Get(k))
+		// make headers canonical
+		for _, s := range request.Header.Values(k) {
+			hdr.Add(k, s)
+		}
 	}
 	request.Header = hdr
 
 	log.Println("request:", request.Method, request.Host, request.RequestURI)
 
-	writer.Header().Set("Ton-Reverse-Proxy", "Tonutils Reverse Proxy v0.2.0")
+	writer.Header().Set("Ton-Reverse-Proxy", "Tonutils Reverse Proxy v0.3.0")
 	h.h.ServeHTTP(writer, request)
 }
 
@@ -68,9 +71,14 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	netCfg, err := liteclient.GetConfigFromUrl(ctx, cfg.NetworkConfigURL)
+	netCfg, err := liteclient.GetConfigFromUrl(context.Background(), cfg.NetworkConfigURL)
 	if err != nil {
-		panic("failed to load network config: " + err.Error())
+		log.Println("failed to download ton config:", err.Error(), "; we will take it from static cache")
+		netCfg = &liteclient.GlobalConfig{}
+		if err = json.NewDecoder(bytes.NewBufferString(config.FallbackNetworkConfig)).Decode(netCfg); err != nil {
+			log.Println("failed to parse fallback ton config:", err.Error())
+			os.Exit(1)
+		}
 	}
 
 	client := liteclient.NewConnectionPool()
@@ -91,7 +99,7 @@ func main() {
 		panic("failed to load network config: " + err.Error())
 	}
 
-	dhtClient, err := dht.NewClientFromConfig(ctx, gateway, netCfg)
+	dhtClient, err := dht.NewClientFromConfig(gateway, netCfg)
 	if err != nil {
 		panic(err)
 	}
@@ -161,7 +169,7 @@ func loadConfig() (*Config, error) {
 			return nil, err
 		}
 		cfg.PrivateKey = srvKey.Seed()
-		cfg.NetworkConfigURL = "https://ton-blockchain.github.io/global.config.json"
+		cfg.NetworkConfigURL = "https://ton.org/global.config.json"
 
 		cfg.ExternalIP, err = getPublicIP()
 		if err != nil {
@@ -194,7 +202,7 @@ func loadConfig() (*Config, error) {
 
 	// backwards compatibility with old configs
 	if cfg.NetworkConfigURL == "" {
-		cfg.NetworkConfigURL = "https://ton-blockchain.github.io/global.config.json"
+		cfg.NetworkConfigURL = "https://ton.org/global.config.json"
 	}
 
 	return &cfg, nil
@@ -221,7 +229,7 @@ func setupDomain(client *liteclient.ConnectionPool, domain string, adnlAddr []by
 	record, isStorage := domainInfo.GetSiteRecord()
 	if isStorage || !bytes.Equal(record, adnlAddr) {
 		data := domainInfo.BuildSetSiteRecordPayload(adnlAddr, false).ToBOCWithFlags(false)
-		args := "?bin=" + base64.URLEncoding.EncodeToString(data) + "&amount=" + tlb.MustFromTON("0.02").NanoTON().String()
+		args := "?bin=" + base64.URLEncoding.EncodeToString(data) + "&amount=" + tlb.MustFromTON("0.02").Nano().String()
 
 		nftData, err := domainInfo.GetNFTData(context.Background())
 		if err != nil {
