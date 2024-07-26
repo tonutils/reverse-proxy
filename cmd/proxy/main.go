@@ -39,6 +39,7 @@ type Config struct {
 
 var FlagDomain = flag.String("domain", "", "domain to configure")
 var FlagDebug = flag.Bool("debug", false, "more logs")
+var FlagTxURL = flag.Bool("tx-url", false, "show set domain record url instead of qr")
 
 type Handler struct {
 	h http.Handler
@@ -56,7 +57,7 @@ func (h Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 
 	log.Println("request:", request.Method, request.Host, request.RequestURI)
 
-	writer.Header().Set("Ton-Reverse-Proxy", "Tonutils Reverse Proxy v0.3.0")
+	writer.Header().Set("Ton-Reverse-Proxy", "Tonutils Reverse Proxy v0.3.1")
 	h.h.ServeHTTP(writer, request)
 }
 
@@ -237,7 +238,12 @@ func setupDomain(client *liteclient.ConnectionPool, domain string, adnlAddr []by
 			return
 		}
 
-		qrterminal.GenerateHalfBlock("ton://transfer/"+domainInfo.GetNFTAddress().String()+args, qrterminal.L, os.Stdout)
+		txUrl := "ton://transfer/" + domainInfo.GetNFTAddress().String() + args
+		if *FlagTxURL {
+			fmt.Println(txUrl)
+		} else {
+			qrterminal.GenerateHalfBlock(txUrl, qrterminal.L, os.Stdout)
+		}
 		fmt.Println("Execute this transaction from the domain owner's wallet to setup site records.")
 		fmt.Println("Execute transaction from wallet:", nftData.OwnerAddress.String())
 		fmt.Println("When you've done, configuration will automatically proceed in ~10 seconds.")
