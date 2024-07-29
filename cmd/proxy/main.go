@@ -13,6 +13,7 @@ import (
 	"github.com/ton-utils/reverse-proxy/config"
 	"github.com/xssnick/tonutils-go/adnl"
 	"github.com/xssnick/tonutils-go/adnl/dht"
+	"github.com/xssnick/tonutils-go/adnl/rldp"
 	rldphttp "github.com/xssnick/tonutils-go/adnl/rldp/http"
 	"github.com/xssnick/tonutils-go/liteclient"
 	"github.com/xssnick/tonutils-go/tlb"
@@ -46,6 +47,14 @@ type Handler struct {
 }
 
 func (h Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	if *FlagDebug {
+		reqDump, err := httputil.DumpRequestOut(request, true)
+		if err != nil {
+			return
+		}
+		fmt.Println("REQUEST:", string(reqDump))
+	}
+
 	hdr := http.Header{}
 	for k := range request.Header {
 		// make headers canonical
@@ -57,7 +66,7 @@ func (h Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 
 	log.Println("request:", request.Method, request.Host, request.RequestURI)
 
-	writer.Header().Set("Ton-Reverse-Proxy", "Tonutils Reverse Proxy v0.3.1")
+	writer.Header().Set("Ton-Reverse-Proxy", "Tonutils Reverse Proxy v0.3.2")
 	h.h.ServeHTTP(writer, request)
 }
 
@@ -112,7 +121,11 @@ func main() {
 
 	if *FlagDebug == false {
 		adnl.Logger = func(v ...any) {}
-		// rldphttp.Logger = func(v ...any) {}
+		rldphttp.Logger = func(v ...any) {}
+	} else {
+		rldp.Logger = log.Println
+		rldphttp.Logger = log.Println
+		adnl.Logger = log.Println
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(u)
