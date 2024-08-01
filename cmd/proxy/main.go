@@ -201,7 +201,7 @@ func loadConfig() (*Config, error) {
 			return nil, err
 		}
 
-		err = os.WriteFile(file, data, 555)
+		err = os.WriteFile(file, data, 0644) // rw-r--r--
 		if err != nil {
 			return nil, err
 		}
