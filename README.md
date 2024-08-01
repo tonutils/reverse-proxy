@@ -54,22 +54,22 @@ Proxy adds additional headers:
 
 ### FAQ
 
-#### Can I hame multiple domains on single reverse-proxy?
+#### Can I have multiple domains on single reverse-proxy?
 
-Yes! You can run any number of sites within single reverse-proxy, just link all your domains to same adnl address. 
-You can run reverse-proxy with `-domain` flag one by one for all your domains and execute transaction. `-domain` flag is needed only for linking step, for futher launches you are not required to specify it, your domains will remain linked.
+Yes! You can run any number of sites within single reverse-proxy, just link all your domains to same ADNL address. 
+You can run reverse-proxy with `-domain` flag one by one for all your domains and execute transaction. `-domain` flag is needed only for linking step, for further launches you are not required to specify it, your domains will remain linked.
 
-#### Im getting error code 651: too big masterchain block seqno
+#### I'm getting error code 651: too big masterchain block seqno
 
-It can be due to public liteservers syncronization issues, you can replace global config url in `config.json` to tonutils liteservers config `https://tonutils.com/ls/free-mainnet-config.json`, or any other.
+It can be due to public liteservers synchronization issues, you can replace global config url in `config.json` to tonutils liteservers config `https://tonutils.com/ls/free-mainnet-config.json`, or any other.
 
-#### My TON Site is not working in Telegram, and before I used older reverse proxy version
+#### My TON Site is not working in Telegram, and before I've used older reverse proxy version
 
-It can be because of older protocol data time was cached by Telegram proxy, the fastest way to recover is regenerage adnl address, just delete `config.json` and relink your domain to newly generated adnl id.
+It can be because of older protocol data time was cached by Telegram proxy, the fastest way to recover is regenerate ADNL address, just delete `config.json` and relink your domain to newly generated ADNL ID.
 
 #### I started reverse proxy but my site is not responding
 
-To run TON Site you should have public (white) ip address, and in+out UPD traffic allowed on port from `config.json`. You could use [Tonutils Proxy](https://github.com/xssnick/Tonutils-Proxy) to check your site.
+To run TON Site you should have public (white) ip address, and in+out UDP traffic allowed on port from `config.json`. You could use [Tonutils Proxy](https://github.com/xssnick/Tonutils-Proxy) to check your site.
 
 ### How to build from sources
 
