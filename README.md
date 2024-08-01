@@ -54,6 +54,11 @@ Proxy adds additional headers:
 
 ### FAQ
 
+#### Can I hame multiple domains on single reverse-proxy?
+
+Yes! You can run any number of sites within single reverse-proxy, just link all your domains to same adnl address. 
+You can run reverse-proxy with `-domain` flag one by one for all your domains and execute transaction. `-domain` flag is needed only for linking step, for futher launches you are not required to specify it, your domains will remain linked.
+
 #### Im getting error code 651: too big masterchain block seqno
 
 It can be due to public liteservers syncronization issues, you can replace global config url in `config.json` to tonutils liteservers config `https://tonutils.com/ls/free-mainnet-config.json`, or any other.
