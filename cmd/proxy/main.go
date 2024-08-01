@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -42,6 +43,9 @@ var FlagDomain = flag.String("domain", "", "domain to configure")
 var FlagDebug = flag.Bool("debug", false, "more logs")
 var FlagTxURL = flag.Bool("tx-url", false, "show set domain record url instead of qr")
 
+var GitCommit = "custom"
+var Version = "v0.3.3"
+
 type Handler struct {
 	h http.Handler
 }
@@ -66,20 +70,19 @@ func (h Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 
 	log.Println("request:", request.Method, request.Host, request.RequestURI)
 
-	writer.Header().Set("Ton-Reverse-Proxy", "Tonutils Reverse Proxy v0.3.2")
+	writer.Header().Set("Ton-Reverse-Proxy", "Tonutils Reverse Proxy "+Version)
 	h.h.ServeHTTP(writer, request)
 }
 
 func main() {
 	flag.Parse()
 
+	log.Println("Tonutils Reverse Proxy", Version+", build: "+GitCommit)
+
 	cfg, err := loadConfig()
 	if err != nil {
 		panic("failed to load config: " + err.Error())
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 
 	netCfg, err := liteclient.GetConfigFromUrl(context.Background(), cfg.NetworkConfigURL)
 	if err != nil {
@@ -92,7 +95,10 @@ func main() {
 	}
 
 	client := liteclient.NewConnectionPool()
-	// connect to testnet lite server
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	err = client.AddConnectionsFromConfig(ctx, netCfg)
 	if err != nil {
 		panic(err)
@@ -136,7 +142,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	log.Println("Server's ADNL address is", addr+".adnl")
+	log.Println("Server's ADNL address is", addr+".adnl ("+hex.EncodeToString(s.Address())+")")
 
 	if *FlagDomain != "" {
 		setupDomain(client, *FlagDomain, s.Address())
@@ -228,9 +234,10 @@ func setupDomain(client *liteclient.ConnectionPool, domain string, adnlAddr []by
 	api := ton.NewAPIClient(client)
 
 	// get root dns address from network config
-	root, err := dns.RootContractAddr(api)
+	root, err := dns.GetRootContractAddr(ctx, api)
 	if err != nil {
-		panic(err)
+		log.Println("Failed to resolve root dns contract:", err)
+		return
 	}
 
 	resolver := dns.NewDNSClient(api, root)
@@ -245,7 +252,7 @@ func setupDomain(client *liteclient.ConnectionPool, domain string, adnlAddr []by
 		data := domainInfo.BuildSetSiteRecordPayload(adnlAddr, false).ToBOCWithFlags(false)
 		args := "?bin=" + base64.URLEncoding.EncodeToString(data) + "&amount=" + tlb.MustFromTON("0.02").Nano().String()
 
-		nftData, err := domainInfo.GetNFTData(context.Background())
+		nftData, err := domainInfo.GetNFTData(ctx)
 		if err != nil {
 			log.Println("Failed to get domain data", domain, ":", err)
 			return
@@ -261,8 +268,8 @@ func setupDomain(client *liteclient.ConnectionPool, domain string, adnlAddr []by
 		fmt.Println("Execute transaction from wallet:", nftData.OwnerAddress.String())
 		fmt.Println("When you've done, configuration will automatically proceed in ~10 seconds.")
 		for {
-			time.Sleep(5 * time.Second)
-			updated, err := resolve(resolver, domain, adnlAddr)
+			time.Sleep(2 * time.Second)
+			updated, err := resolve(ctx, resolver, domain, adnlAddr)
 			if err != nil {
 				continue
 			}
@@ -279,8 +286,8 @@ func setupDomain(client *liteclient.ConnectionPool, domain string, adnlAddr []by
 	fmt.Println("Domain", domain, "is already configured to use with current ADNL address. Everything is OK!")
 }
 
-func resolve(client *dns.Client, domain string, adnlAddr []byte) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+func resolve(ctx context.Context, client *dns.Client, domain string, adnlAddr []byte) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	domainInfo, err := client.Resolve(ctx, domain)

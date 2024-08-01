@@ -14,3 +14,7 @@ require (
 	golang.org/x/sys v0.15.0 // indirect
 	rsc.io/qr v0.2.0 // indirect
 )
+
+replace (
+	github.com/xssnick/tonutils-go v1.9.9-0.20240729172752-0ce0d252a288 => ../tonutils-go
+)
