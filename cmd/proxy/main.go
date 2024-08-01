@@ -228,7 +228,7 @@ func setupDomain(client *liteclient.ConnectionPool, domain string, adnlAddr []by
 	api := ton.NewAPIClient(client)
 
 	// get root dns address from network config
-	root, err := dns.RootContractAddr(api)
+	root, err := dns.GetRootContractAddr(ctx, api)
 	if err != nil {
 		panic(err)
 	}
