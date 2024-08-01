@@ -1,4 +1,8 @@
 # Tonutils Reverse Proxy
+
+[![Based on TON][ton-svg]][ton]
+[![Telegram Channel][tgc-svg]][tg-channel]
+
 Easy to set up and use reverse proxy for TON Sites.
 It makes your website accessible via TON Network!
 
@@ -47,3 +51,10 @@ Proxy adds additional headers:
 ### Installation on any other OS
 
 Build it from sources using `make build`, and run as in the step 2 for linux. Go environment is required to build.
+
+<!-- Badges -->
+[ton-svg]: https://img.shields.io/badge/Based%20on-TON-blue
+[tgc-svg]: https://img.shields.io/badge/Telegram%20-Subscribe-24A1DE
+
+[ton]: https://ton.org
+[tg-channel]: https://t.me/tonutilsnews
