@@ -7,7 +7,7 @@ It makes your website accessible via TON Network!
 ##### Download
 
 ```sh
-wget https://github.com/ton-utils/reverse-proxy/releases/download/v0.3.2/tonutils-reverse-proxy-linux-amd64
+wget https://github.com/ton-utils/reverse-proxy/releases/download/v0.3.3/tonutils-reverse-proxy-linux-amd64
 chmod +x tonutils-reverse-proxy-linux-amd64
 ```
 
@@ -23,7 +23,9 @@ Run with domain configuration, and follow the steps:
 
 <img width="500" alt="yes1" src="https://user-images.githubusercontent.com/9332353/210967656-182b0d0f-6954-49c9-bf8a-40f5b4a61aa7.png">
 
-Scan QR code from your terminal using Tonkeeper, Tonhub or any other wallet, execute transaction. Your domain will be linked to your site.
+Scan QR code from your terminal using Tonkeeper, Tonhub or any other wallet, execute transaction. Your domain will be linked to your site. 
+
+If for some reason you cannot scan QR code, add `-tx-url` flag, so it will be displayed as `ton://` url for transaction.
 
 ###### Run without domain
 
@@ -44,4 +46,4 @@ Proxy adds additional headers:
 
 ### Installation on any other OS
 
-Build it from sources using `./build.sh`, and run as in the step 2 for linux. Go environment is required to build.
+Build it from sources using `make build`, and run as in the step 2 for linux. Go environment is required to build.
