@@ -21,8 +21,6 @@ Or download a binary for your OS:
    * [Mac Intel](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-mac-amd64)
    * [Mac Apple Silicon](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-mac-arm64) 
 
-Builds for other operation systems are also available on release page.
-
 ### Run
 
 Run with domain configuration, and follow the steps:
