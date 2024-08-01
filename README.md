@@ -4,20 +4,26 @@
 [![Telegram Channel][tgc-svg]][tg-channel]
 
 Easy to set up and use reverse proxy for TON Sites.
-It makes your website accessible via TON Network!
+It makes your website accessible inside The Open Network!
 
-### Installation on any Linux
+### Install
 
-##### Download
-
+Using linux based server:
 ```sh
-wget https://github.com/ton-utils/reverse-proxy/releases/download/v0.3.3/tonutils-reverse-proxy-linux-amd64
+wget https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-linux-amd64
 chmod +x tonutils-reverse-proxy-linux-amd64
 ```
 
+Or download a binary for your OS:
+   * [Linux AMD64](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-linux-amd64)
+   * [Linux ARM64](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-linux-arm64)
+   * [Windows x64](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-windows-x64.exe)
+   * [Mac Intel](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-mac-amd64)
+   * [Mac Apple Silicon](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-mac-arm64) 
+
 Builds for other operation systems are also available on release page.
 
-##### Run
+### Run
 
 Run with domain configuration, and follow the steps:
 
@@ -31,7 +37,7 @@ Scan QR code from your terminal using Tonkeeper, Tonhub or any other wallet, exe
 
 If for some reason you cannot scan QR code, add `-tx-url` flag, so it will be displayed as `ton://` url for transaction.
 
-###### Run without domain
+##### Run without domain
 
 Alternatively, you can run in simple mode, with .adnl domain, if you don't have .ton or .t.me domain:
 
@@ -48,7 +54,21 @@ If you want to change some settings, like proxy pass url - open `config.json` fi
 Proxy adds additional headers:
 `X-Adnl-Ip` - ip of client, and `X-Adnl-Id` - adnl id of client
 
-### Installation on any other OS
+### FAQ
+
+#### Im getting error code 651: too big masterchain block seqno
+
+It can be due to public liteservers syncronization issues, you can replace global config url in `config.json` to tonutils liteservers config `https://tonutils.com/ls/free-mainnet-config.json`, or any other.
+
+#### My TON Site is not working in Telegram, and before I used older reverse proxy version
+
+It can be because of older protocol data time was cached by Telegram proxy, the fastest way to recover is regenerage adnl address, just delete `config.json` and relink your domain to newly generated adnl id.
+
+#### I started reverse proxy but my site is not responding
+
+To run TON Site you should have public (white) ip address, and in+out UPD traffic allowed on port from `config.json`. You could use [Tonutils Proxy](https://github.com/xssnick/Tonutils-Proxy) to check your site.
+
+### How to build from sources
 
 Build it from sources using `make build`, and run as in the step 2 for linux. Go environment is required to build.
 
