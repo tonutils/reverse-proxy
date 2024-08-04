@@ -47,10 +47,23 @@ Alternatively, you can run in simple mode, with .adnl domain, if you don't have 
 
 Now anyone can access your TON Site! Using ADNL address or domain. 
 
-If you want to change some settings, like proxy pass url - open `config.json` file, edit and restart proxy. Default proxy pass url is `http://127.0.0.1:80/`
+If you want to change some settings, like proxy pass url - open `config.json` file, edit and restart proxy.
 
 Proxy adds additional headers:
 `X-Adnl-Ip` - ip of client, and `X-Adnl-Id` - adnl id of client
+
+If you want to change some settings, like proxy pass url - open `config.json` file, edit and restart proxy.
+Or use ENV variables:
+- `GLOBAL_CONFIG_URL` (default: https://ton.org/global.config.json)
+- `EXTERNAL_IP` (default: detect via http://ip-api.com/json/)
+- `LISTEN_IP` (default: 0.0.0.0)
+- `LISTEN_PORT` (default: 9000 + rand)
+- `PROXY_PASS` (default: http://127.0.0.1:80)
+- `PRIVATE_KEY` (default: generate and write to `config.json`, is env not passed. It can be used on first start to generate Private Key )
+
+ENV's, has priority over `config.json` and can be useful to run reverse-proxy in Docker container.
+
+*Using `PRIVATE_KEY` is more safety then store key in file and recommended for production.
 
 ### FAQ
 
