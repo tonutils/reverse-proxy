@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/mdp/qrterminal/v3"
@@ -27,6 +28,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -177,31 +179,91 @@ func getPublicIP() (string, error) {
 	return ip.Query, nil
 }
 
+func getEnvValue(envName string) (string, error) {
+	var value = os.Getenv(envName)
+	if value != "" {
+		return value, nil
+	} else {
+		return "", errors.New("environment variable " + envName + " not found")
+	}
+}
+
 func loadConfig() (*Config, error) {
 	var cfg Config
+	var envValue string
+	var saveRequire = false
 
 	file := "./config.json"
 	data, err := os.ReadFile(file)
 	if err != nil {
-		var srvKey ed25519.PrivateKey
-		_, srvKey, err = ed25519.GenerateKey(nil)
+		saveRequire = true
+	} else {
+		err = json.Unmarshal(data, &cfg)
 		if err != nil {
 			return nil, err
 		}
-		cfg.PrivateKey = srvKey.Seed()
+	}
+
+	//defaults with env priority
+	envValue, err = getEnvValue("GLOBAL_CONFIG_URL")
+	if err == nil {
+		cfg.NetworkConfigURL = envValue
+	} else if cfg.NetworkConfigURL == "" {
 		cfg.NetworkConfigURL = "https://ton.org/global.config.json"
+	}
 
-		cfg.ExternalIP, err = getPublicIP()
+	envValue, err = getEnvValue("EXTERNAL_IP")
+	if err == nil {
+		cfg.ExternalIP = envValue
+	} else if cfg.ExternalIP == "" {
+		var publicIP, err = getPublicIP()
 		if err != nil {
 			return nil, err
 		}
-		cfg.ListenIP = "0.0.0.0"
+		cfg.ExternalIP = publicIP
+	}
 
+	envValue, err = getEnvValue("LISTEN_IP")
+	if err == nil {
+		cfg.ListenIP = envValue
+	} else if cfg.ListenIP == "" {
+		cfg.ListenIP = "0.0.0.0"
+	}
+
+	envValue, err = getEnvValue("LISTEN_PORT")
+	if err == nil {
+		value, err := strconv.ParseUint(envValue, 10, 16)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Port = uint16(value)
+	} else if cfg.Port == 0 {
 		// generate consistent port
 		cfg.Port = 9000 + (crc16.Checksum([]byte(cfg.ExternalIP), crc16.MakeTable(crc16.CRC16_XMODEM)) % 5000)
+	}
 
+	envValue, err = getEnvValue("PROXY_PASS")
+	if err == nil {
+		cfg.ProxyPass = envValue
+	} else if cfg.ProxyPass == "" {
 		cfg.ProxyPass = "http://127.0.0.1:80/"
+	}
 
+	var envPrivateKey string
+	envPrivateKey, err = getEnvValue("PRIVATE_KEY")
+	if err != nil {
+		log.Println("Warning: Store PrivateKey in config.json is unsafe! Use PRIVATE_KEY env instead.")
+		if cfg.PrivateKey == nil {
+			var srvKey ed25519.PrivateKey
+			_, srvKey, err = ed25519.GenerateKey(nil)
+			if err != nil {
+				return nil, err
+			}
+			cfg.PrivateKey = srvKey.Seed()
+		}
+	}
+
+	if saveRequire {
 		data, err = json.MarshalIndent(cfg, "", "\t")
 		if err != nil {
 			return nil, err
@@ -211,18 +273,14 @@ func loadConfig() (*Config, error) {
 		if err != nil {
 			return nil, err
 		}
-
-		return &cfg, nil
 	}
 
-	err = json.Unmarshal(data, &cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	// backwards compatibility with old configs
-	if cfg.NetworkConfigURL == "" {
-		cfg.NetworkConfigURL = "https://ton.org/global.config.json"
+	//envPrivateKey must stay secret
+	if envPrivateKey != "" {
+		cfg.PrivateKey, err = base64.StdEncoding.DecodeString(envPrivateKey)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return &cfg, nil
