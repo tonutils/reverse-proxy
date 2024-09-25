@@ -28,6 +28,7 @@ import (
 	"net/url"
 	"os"
 	"time"
+	"crypto/ssl"
 )
 
 type Config struct {
@@ -134,6 +135,8 @@ func main() {
 		adnl.Logger = log.Println
 	}
 
+	insecureTransport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true},}
+    http.DefaultTransport = insecureTransport
 	proxy := httputil.NewSingleHostReverseProxy(u)
 	s := rldphttp.NewServer(ed25519.NewKeyFromSeed(cfg.PrivateKey), dhtClient, Handler{proxy})
 	s.SetExternalIP(net.ParseIP(cfg.ExternalIP).To4())
