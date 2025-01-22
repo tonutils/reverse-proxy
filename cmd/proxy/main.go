@@ -9,6 +9,15 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"os"
+	"time"
+
 	"github.com/mdp/qrterminal/v3"
 	"github.com/sigurn/crc16"
 	"github.com/ton-utils/reverse-proxy/config"
@@ -20,14 +29,6 @@ import (
 	"github.com/xssnick/tonutils-go/tlb"
 	"github.com/xssnick/tonutils-go/ton"
 	"github.com/xssnick/tonutils-go/ton/dns"
-	"io"
-	"log"
-	"net"
-	"net/http"
-	"net/http/httputil"
-	"net/url"
-	"os"
-	"time"
 )
 
 type Config struct {
@@ -42,7 +43,8 @@ type Config struct {
 var FlagDomain = flag.String("domain", "", "domain to configure")
 var FlagDebug = flag.Bool("debug", false, "more logs")
 var FlagTxURL = flag.Bool("tx-url", false, "show set domain record url instead of qr")
-
+var FlagPort = flag.Uint("port", 0, "port of adnl server")
+var FlagProxyPass = flag.String("proxy-pass", "http://127.0.0.1:80/", "entry point of your webserver")
 var GitCommit = "custom"
 var Version = "v0.3.3"
 
@@ -197,10 +199,15 @@ func loadConfig() (*Config, error) {
 		}
 		cfg.ListenIP = "0.0.0.0"
 
-		// generate consistent port
-		cfg.Port = 9000 + (crc16.Checksum([]byte(cfg.ExternalIP), crc16.MakeTable(crc16.CRC16_XMODEM)) % 5000)
+		if FlagPort != nil && *FlagPort > 0 {
+			// generate consistent port
+			cfg.Port = uint16(*FlagPort)
+		} else {
+			// generate consistent port
+			cfg.Port = 9000 + (crc16.Checksum([]byte(cfg.ExternalIP), crc16.MakeTable(crc16.CRC16_XMODEM)) % 5000)
+		}
 
-		cfg.ProxyPass = "http://127.0.0.1:80/"
+		cfg.ProxyPass = *FlagProxyPass
 
 		data, err = json.MarshalIndent(cfg, "", "\t")
 		if err != nil {
