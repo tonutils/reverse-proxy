@@ -1,32 +1,41 @@
 package main
 
+import "C"
 import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"github.com/mdp/qrterminal/v3"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/sigurn/crc16"
+	tunnelConfig "github.com/ton-blockchain/adnl-tunnel/config"
+	"github.com/ton-blockchain/adnl-tunnel/tunnel"
 	"github.com/ton-utils/reverse-proxy/config"
+	"github.com/ton-utils/reverse-proxy/rldphttp"
 	"github.com/xssnick/tonutils-go/adnl"
+	"github.com/xssnick/tonutils-go/adnl/address"
 	"github.com/xssnick/tonutils-go/adnl/dht"
 	"github.com/xssnick/tonutils-go/adnl/rldp"
-	rldphttp "github.com/xssnick/tonutils-go/adnl/rldp/http"
 	"github.com/xssnick/tonutils-go/liteclient"
 	"github.com/xssnick/tonutils-go/tlb"
 	"github.com/xssnick/tonutils-go/ton"
 	"github.com/xssnick/tonutils-go/ton/dns"
 	"io"
-	"log"
+	regularLog "log"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -41,10 +50,41 @@ type Config struct {
 
 var FlagDomain = flag.String("domain", "", "domain to configure")
 var FlagDebug = flag.Bool("debug", false, "more logs")
+var FlagAllowInsecureHttps = flag.Bool("allow-insecure-https", false, "allow insecure https")
 var FlagTxURL = flag.Bool("tx-url", false, "show set domain record url instead of qr")
+var TunnelConfig = flag.String("tunnel-config", "", "tunnel config path")
 
 var GitCommit = "custom"
-var Version = "v0.3.3"
+var Version = "v0.4.0"
+
+func envOrVal(env string, arg any) any {
+	var res = arg
+
+	val, exists := os.LookupEnv(env)
+	if exists && val != "" {
+		switch arg.(type) {
+		case []byte:
+			v, err := base64.StdEncoding.DecodeString(val)
+			if err != nil {
+				panic(err.Error())
+			}
+			return v
+		case uint16:
+			v, err := strconv.ParseUint(val, 10, 16)
+			if err != nil {
+				panic(err.Error())
+			}
+			return uint16(v)
+		case string:
+			return val
+		case bool:
+			ok := strings.ToLower(val) != "0" && strings.ToLower(val) != "false"
+			return ok
+		}
+	}
+
+	return res
+}
 
 type Handler struct {
 	h http.Handler
@@ -56,7 +96,9 @@ func (h Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		if err != nil {
 			return
 		}
-		fmt.Println("REQUEST:", string(reqDump))
+		log.Debug().
+			Str("request_dump", string(reqDump)).
+			Msg("Dumping HTTP request")
 	}
 
 	hdr := http.Header{}
@@ -68,7 +110,11 @@ func (h Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 	request.Header = hdr
 
-	log.Println("request:", request.Method, request.Host, request.RequestURI)
+	log.Debug().
+		Str("method", request.Method).
+		Str("host", request.Host).
+		Str("uri", request.RequestURI).
+		Msg("Received HTTP request")
 
 	writer.Header().Set("Ton-Reverse-Proxy", "Tonutils Reverse Proxy "+Version)
 	h.h.ServeHTTP(writer, request)
@@ -77,20 +123,24 @@ func (h Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 func main() {
 	flag.Parse()
 
-	log.Println("Tonutils Reverse Proxy", Version+", build: "+GitCommit)
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout}).Level(zerolog.InfoLevel)
+	if *FlagDebug {
+		log.Logger = log.Logger.Level(zerolog.DebugLevel)
+	}
+
+	log.Info().Str("version", Version).Str("build", GitCommit).Msg("Starting Tonutils Reverse Proxy")
 
 	cfg, err := loadConfig()
 	if err != nil {
-		panic("failed to load config: " + err.Error())
+		log.Fatal().Err(err).Msg("Failed to load config")
 	}
 
 	netCfg, err := liteclient.GetConfigFromUrl(context.Background(), cfg.NetworkConfigURL)
 	if err != nil {
-		log.Println("failed to download ton config:", err.Error(), "; we will take it from static cache")
+		log.Warn().Err(err).Msg("Failed to download TON config, using static cache")
 		netCfg = &liteclient.GlobalConfig{}
 		if err = json.NewDecoder(bytes.NewBufferString(config.FallbackNetworkConfig)).Decode(netCfg); err != nil {
-			log.Println("failed to parse fallback ton config:", err.Error())
-			os.Exit(1)
+			log.Fatal().Err(err).Msg("Failed to parse fallback TON config")
 		}
 	}
 
@@ -101,56 +151,111 @@ func main() {
 
 	err = client.AddConnectionsFromConfig(ctx, netCfg)
 	if err != nil {
-		panic(err)
+		log.Fatal().Err(err).Msg("Failed to add connections from config")
 	}
 
 	_, dhtAdnlKey, err := ed25519.GenerateKey(nil)
 	if err != nil {
-		panic("failed to generate ed25519 key for dht: " + err.Error())
+		log.Fatal().Err(err).Msg("Failed to generate key for DHT")
 	}
 
-	gateway := adnl.NewGateway(dhtAdnlKey)
-	err = gateway.StartClient()
+	dhtGateway := adnl.NewGateway(dhtAdnlKey)
+	err = dhtGateway.StartClient()
 	if err != nil {
-		panic("failed to load network config: " + err.Error())
+		log.Fatal().Err(err).Msg("Failed to start ADNL gateway client")
 	}
 
-	dhtClient, err := dht.NewClientFromConfig(gateway, netCfg)
+	dhtClient, err := dht.NewClientFromConfig(dhtGateway, netCfg)
 	if err != nil {
-		panic(err)
+		log.Fatal().Err(err).Msg("Failed to create DHT client from config")
+	}
+
+	var gate *adnl.Gateway
+	if *TunnelConfig != "" {
+		data, err := os.ReadFile(*TunnelConfig)
+		if err != nil {
+			if os.IsNotExist(err) {
+				if _, err = tunnelConfig.GenerateClientConfig(*TunnelConfig); err != nil {
+					log.Error().Err(err).Msg("Failed to generate tunnel config")
+					os.Exit(1)
+				}
+				log.Info().Msg("Generated tunnel config; fill it with the desired route and restart")
+				os.Exit(0)
+			}
+			log.Fatal().Err(err).Msg("Failed to load tunnel config")
+		}
+
+		var tunCfg tunnelConfig.ClientConfig
+		if err = json.Unmarshal(data, &tunCfg); err != nil {
+			log.Fatal().Err(err).Msg("Failed to parse tunnel config")
+		}
+
+		tun, port, ip, err := tunnel.PrepareTunnel(&tunCfg, netCfg)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Failed to prepare tunnel")
+		}
+
+		gate = adnl.NewGatewayWithListener(ed25519.NewKeyFromSeed(cfg.PrivateKey), func(addr string) (net.PacketConn, error) {
+			return tun, nil
+		})
+		gate.SetAddressList([]*address.UDP{
+			{
+				IP:   ip,
+				Port: int32(port),
+			},
+		})
+
+		tun.SetOutAddressChangedHandler(func(addr *net.UDPAddr) {
+			gate.SetAddressList([]*address.UDP{
+				{
+					IP:   addr.IP,
+					Port: int32(addr.Port),
+				},
+			})
+		})
+	} else {
+		gate = adnl.NewGateway(ed25519.NewKeyFromSeed(cfg.PrivateKey))
+		gate.SetAddressList([]*address.UDP{
+			{
+				IP:   net.ParseIP(cfg.ExternalIP).To4(),
+				Port: int32(cfg.Port),
+			},
+		})
 	}
 
 	u, err := url.Parse(cfg.ProxyPass)
 	if err != nil {
-		panic(err)
+		log.Fatal().Err(err).Msg("Failed to parse proxy pass URL")
 	}
 
 	if *FlagDebug == false {
 		adnl.Logger = func(v ...any) {}
 		rldphttp.Logger = func(v ...any) {}
 	} else {
-		rldp.Logger = log.Println
-		rldphttp.Logger = log.Println
-		adnl.Logger = log.Println
+		rldp.Logger = regularLog.Println
+		rldphttp.Logger = regularLog.Println
+		// adnl.Logger = regularLog.Println
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(u)
-	s := rldphttp.NewServer(ed25519.NewKeyFromSeed(cfg.PrivateKey), dhtClient, Handler{proxy})
-	s.SetExternalIP(net.ParseIP(cfg.ExternalIP).To4())
+	if *FlagAllowInsecureHttps {
+		proxy.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+	}
+	s := rldphttp.NewServer(ed25519.NewKeyFromSeed(cfg.PrivateKey), gate, dhtClient, Handler{proxy})
 
 	addr, err := rldphttp.SerializeADNLAddress(s.Address())
 	if err != nil {
-		panic(err)
+		log.Fatal().Err(err).Msg("Failed to serialize ADNL address")
 	}
-	log.Println("Server's ADNL address is", addr+".adnl ("+hex.EncodeToString(s.Address())+")")
+	log.Info().Str("ADNL_address", addr).Str("hex_address", hex.EncodeToString(s.Address())).Msg("Server's ADNL address")
 
 	if *FlagDomain != "" {
 		setupDomain(client, *FlagDomain, s.Address())
 	}
 
-	log.Println("Starting server on", addr+".adnl")
+	log.Info().Str("address", addr+".adnl").Msg("Starting server")
 	if err = s.ListenAndServe(fmt.Sprintf("%s:%d", cfg.ListenIP, cfg.Port)); err != nil {
-		panic(err)
+		log.Fatal().Err(err).Msg("Failed to listen and serve")
 	}
 }
 
@@ -225,6 +330,13 @@ func loadConfig() (*Config, error) {
 		cfg.NetworkConfigURL = "https://ton.org/global.config.json"
 	}
 
+	cfg.ExternalIP = envOrVal("EXTERNAL_IP", cfg.ExternalIP).(string)
+	cfg.ListenIP = envOrVal("LISTEN_IP", cfg.ListenIP).(string)
+	cfg.Port = envOrVal("LISTEN_PORT", cfg.Port).(uint16)
+	cfg.ProxyPass = envOrVal("PROXY_PASS", cfg.ProxyPass).(string)
+	cfg.PrivateKey = envOrVal("PRIVATE_KEY", cfg.PrivateKey).([]byte)
+	cfg.NetworkConfigURL = envOrVal("NETWORK_CONFIG_URL", cfg.NetworkConfigURL).(string)
+
 	return &cfg, nil
 }
 
@@ -236,14 +348,14 @@ func setupDomain(client *liteclient.ConnectionPool, domain string, adnlAddr []by
 	// get root dns address from network config
 	root, err := dns.GetRootContractAddr(ctx, api)
 	if err != nil {
-		log.Println("Failed to resolve root dns contract:", err)
+		log.Error().Err(err).Msg("Failed to resolve root dns contract")
 		return
 	}
 
 	resolver := dns.NewDNSClient(api, root)
 	domainInfo, err := resolver.Resolve(ctx, domain)
 	if err != nil {
-		log.Println("Failed to configure domain", domain, ":", err)
+		log.Error().Err(err).Str("domain", domain).Msg("Failed to configure domain")
 		return
 	}
 
@@ -254,7 +366,7 @@ func setupDomain(client *liteclient.ConnectionPool, domain string, adnlAddr []by
 
 		nftData, err := domainInfo.GetNFTData(ctx)
 		if err != nil {
-			log.Println("Failed to get domain data", domain, ":", err)
+			log.Error().Err(err).Str("domain", domain).Msg("Failed to get domain data")
 			return
 		}
 
@@ -271,6 +383,7 @@ func setupDomain(client *liteclient.ConnectionPool, domain string, adnlAddr []by
 			time.Sleep(2 * time.Second)
 			updated, err := resolve(ctx, resolver, domain, adnlAddr)
 			if err != nil {
+				log.Warn().Err(err).Str("domain", domain).Msg("Retrying domain resolution")
 				continue
 			}
 
@@ -278,12 +391,11 @@ func setupDomain(client *liteclient.ConnectionPool, domain string, adnlAddr []by
 				break
 			}
 		}
-		fmt.Println("Domain", domain, "was successfully configured to use for your TON Site!")
-		fmt.Println()
+		log.Info().Str("domain", domain).Msg("Domain successfully configured to use for your TON Site")
 		return
 	}
 
-	fmt.Println("Domain", domain, "is already configured to use with current ADNL address. Everything is OK!")
+	log.Info().Str("domain", domain).Msg("Domain is already configured to use with current ADNL address. Everything is OK!")
 }
 
 func resolve(ctx context.Context, client *dns.Client, domain string, adnlAddr []byte) (bool, error) {
@@ -292,6 +404,7 @@ func resolve(ctx context.Context, client *dns.Client, domain string, adnlAddr []
 
 	domainInfo, err := client.Resolve(ctx, domain)
 	if err != nil {
+		log.Error().Err(err).Str("domain", domain).Msg("Failed to resolve domain")
 		return false, err
 	}
 
