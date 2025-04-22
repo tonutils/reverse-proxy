@@ -10,16 +10,16 @@ It makes your website accessible inside The Open Network!
 
 Using linux based server:
 ```sh
-wget https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-linux-amd64
+wget https://github.com/tonutils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-linux-amd64
 chmod +x tonutils-reverse-proxy-linux-amd64
 ```
 
 Or download a binary for your OS:
-   * [Linux AMD64](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-linux-amd64)
-   * [Linux ARM64](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-linux-arm64)
-   * [Windows x64](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-windows-x64.exe)
-   * [Mac Intel](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-mac-amd64)
-   * [Mac Apple Silicon](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-mac-arm64) 
+   * [Linux AMD64](https://github.com/tonutils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-linux-amd64)
+   * [Linux ARM64](https://github.com/tonutils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-linux-arm64)
+   * [Windows x64](https://github.com/tonutils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-windows-x64.exe)
+   * [Mac Intel](https://github.com/tonutils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-mac-amd64)
+   * [Mac Apple Silicon](https://github.com/tonutils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-mac-arm64) 
 
 ### Run
 
