@@ -30,10 +30,10 @@ type Resolver interface {
 
 type RLDP interface {
 	Close()
-	DoQuery(ctx context.Context, maxAnswerSize int64, query, result tl.Serializable) error
+	DoQuery(ctx context.Context, maxAnswerSize uint64, query, result tl.Serializable) error
 	SetOnQuery(handler func(transferId []byte, query *rldp.Query) error)
 	SetOnDisconnect(handler func())
-	SendAnswer(ctx context.Context, maxAnswerSize int64, queryId, transferId []byte, answer tl.Serializable) error
+	SendAnswer(ctx context.Context, maxAnswerSize uint64, timeout uint32, queryId, transferId []byte, answer tl.Serializable) error
 }
 
 type ADNL interface {

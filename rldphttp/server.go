@@ -50,7 +50,8 @@ type writerBuff struct {
 	headerSent bool
 	handled    bool
 
-	maxAnswerSz int64
+	maxAnswerSz uint64
+	timeout     uint32
 	queryId     []byte
 	requestId   []byte
 	transferId  []byte
@@ -151,7 +152,7 @@ func (s *Server) ListenAndServe(listenAddr string) error {
 			return fmt.Errorf("unexpected query type %s", reflect.TypeOf(query.Data))
 		})
 
-		rl := newRLDP(client, false) // server supports both v2 and v1 by default
+		rl := newRLDP(client, true)
 		rl.SetOnQuery(s.handle(rl, adnlAddr, client.RemoteAddr()))
 		return nil
 	})
@@ -184,6 +185,10 @@ func (s *Server) updateDHT(ctx context.Context) error {
 	_, _, err = s.dht.FindAddresses(ctx, id)
 	if err != nil {
 		return err
+	}
+
+	if len(addr.Addresses) == 0 {
+		return fmt.Errorf("no addresses found for %s", hex.EncodeToString(id))
 	}
 
 	Logger("DHT ADNL address record for TON Site was refreshed successfully on", stored,
@@ -282,6 +287,7 @@ func (s *Server) handle(client RLDP, adnlId, addr string) func(transferId []byte
 				server:      s,
 				stream:      stream,
 				maxAnswerSz: query.MaxAnswerSize,
+				timeout:     query.Timeout,
 				queryId:     query.ID,
 				requestId:   req.ID,
 				transferId:  transferId,
@@ -319,7 +325,7 @@ func (s *Server) handle(client RLDP, adnlId, addr string) func(transferId []byte
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), s.Timeout)
-			err = client.SendAnswer(ctx, query.MaxAnswerSize, query.ID, transferId, part)
+			err = client.SendAnswer(ctx, query.MaxAnswerSize, query.Timeout, query.ID, transferId, part)
 			cancel()
 			if err != nil {
 				return fmt.Errorf("failed to send answer: %w", err)
@@ -430,7 +436,7 @@ func (w *writerBuff) flush(payload []byte) error {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	err := w.client.SendAnswer(ctx, w.maxAnswerSz, w.queryId, w.transferId, Response{
+	err := w.client.SendAnswer(ctx, w.maxAnswerSz, w.timeout, w.queryId, w.transferId, Response{
 		Version:    "HTTP/1.1",
 		StatusCode: int32(w.resp.statusCode),
 		Reason:     http.StatusText(w.resp.statusCode),

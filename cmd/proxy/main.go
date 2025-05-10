@@ -34,28 +34,33 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 )
 
 type Config struct {
-	ProxyPass        string `json:"proxy_pass"`
-	PrivateKey       []byte `json:"private_key"`
-	ExternalIP       string `json:"external_ip"`
-	ListenIP         string `json:"listen_ip"`
-	NetworkConfigURL string `json:"network_config_url"`
-	Port             uint16 `json:"port"`
+	ProxyPass                    string                    `json:"proxy_pass"`
+	PrivateKey                   []byte                    `json:"private_key"`
+	ExternalIP                   string                    `json:"external_ip"`
+	ListenIP                     string                    `json:"listen_ip"`
+	NetworkConfigURL             string                    `json:"network_config_url"`
+	CustomTunnelNetworkConfigURL string                    `json:"custom_tunnel_network_config_url"`
+	Port                         uint16                    `json:"port"`
+	TunnelConfig                 tunnelConfig.ClientConfig `json:"tunnel_config"`
+	Version                      int                       `json:"version"`
 }
 
 var FlagDomain = flag.String("domain", "", "domain to configure")
 var FlagDebug = flag.Bool("debug", false, "more logs")
 var FlagAllowInsecureHttps = flag.Bool("allow-insecure-https", false, "allow insecure https")
 var FlagTxURL = flag.Bool("tx-url", false, "show set domain record url instead of qr")
-var TunnelConfig = flag.String("tunnel-config", "", "tunnel config path")
+var EnableTunnel = flag.Bool("enable-tunnel", false, "enable tunnel mode, to host site with no public ip (should be configured first)")
 
-var GitCommit = "custom"
-var Version = "v0.4.0"
+var GitCommit = "dev"
 
 func envOrVal(env string, arg any) any {
 	var res = arg
@@ -116,7 +121,7 @@ func (h Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		Str("uri", request.RequestURI).
 		Msg("Received HTTP request")
 
-	writer.Header().Set("Ton-Reverse-Proxy", "Tonutils Reverse Proxy "+Version)
+	writer.Header().Set("Ton-Reverse-Proxy", "Tonutils Reverse Proxy "+GitCommit)
 	h.h.ServeHTTP(writer, request)
 }
 
@@ -128,7 +133,7 @@ func main() {
 		log.Logger = log.Logger.Level(zerolog.DebugLevel)
 	}
 
-	log.Info().Str("version", Version).Str("build", GitCommit).Msg("Starting Tonutils Reverse Proxy")
+	log.Info().Str("version", GitCommit).Msg("Starting Tonutils Reverse Proxy")
 
 	cfg, err := loadConfig()
 	if err != nil {
@@ -146,7 +151,10 @@ func main() {
 
 	client := liteclient.NewConnectionPool()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	closerCtx, stop := context.WithCancel(context.Background())
+	defer stop()
+
+	ctx, cancel := context.WithTimeout(closerCtx, 30*time.Second)
 	defer cancel()
 
 	err = client.AddConnectionsFromConfig(ctx, netCfg)
@@ -154,12 +162,113 @@ func main() {
 		log.Fatal().Err(err).Msg("Failed to add connections from config")
 	}
 
+	tunnelCtx, tunnelStop := context.WithCancel(context.Background())
+
+	port := cfg.Port
+	ip := net.ParseIP(cfg.ExternalIP)
+
+	var netMgr adnl.NetManager
+	var gate *adnl.Gateway
+	if *EnableTunnel {
+		tunNetCfg := netCfg
+		if cfg.CustomTunnelNetworkConfigURL != "" {
+			log.Info().Str("url", cfg.CustomTunnelNetworkConfigURL).Msg("Using custom tunnel network config")
+			tunNetCfg, err = liteclient.GetConfigFromUrl(context.Background(), cfg.CustomTunnelNetworkConfigURL)
+			if err != nil {
+				log.Fatal().Err(err).Msg("Failed to download custom tunnel network config")
+				return
+			}
+		}
+
+		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout}).Level(zerolog.InfoLevel)
+		if *FlagDebug {
+			log.Logger = log.Logger.Level(zerolog.DebugLevel)
+		}
+
+		if cfg.TunnelConfig.NodesPoolConfigPath == "" {
+			log.Fatal().Msg("Nodes pool config path is empty")
+			return
+		}
+
+		data, err := os.ReadFile(cfg.TunnelConfig.NodesPoolConfigPath)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Failed to load tunnel nodes pool config")
+			return
+		}
+
+		var tunSharedCfg tunnelConfig.SharedConfig
+		if err = json.Unmarshal(data, &tunSharedCfg); err != nil {
+			log.Fatal().Err(err).Msg("Failed to parse tunnel shared config (nodes pool)")
+			return
+		}
+
+		events := make(chan any, 1)
+		go tunnel.RunTunnel(closerCtx, &cfg.TunnelConfig, &tunSharedCfg, tunNetCfg, log.Logger, events)
+
+		initUpd := make(chan tunnel.UpdatedEvent, 1)
+		once := sync.Once{}
+		go func() {
+			for event := range events {
+				switch e := event.(type) {
+				case tunnel.StoppedEvent:
+					tunnelStop()
+					return
+				case tunnel.UpdatedEvent:
+					log.Info().Msg("Tunnel updated")
+
+					e.Tunnel.SetOutAddressChangedHandler(func(addr *net.UDPAddr) {
+						log.Info().Str("addr", addr.IP.String()).Int("port", addr.Port).Msg("Out address updated")
+
+						gate.SetAddressList([]*address.UDP{
+							{
+								IP:   addr.IP,
+								Port: int32(addr.Port),
+							},
+						})
+					})
+
+					once.Do(func() {
+						initUpd <- e
+					})
+				case tunnel.ConfigurationErrorEvent:
+					log.Err(e.Err).Msg("Tunnel configuration error, will retry...")
+				case error:
+					log.Fatal().Err(e).Msg("Tunnel failed")
+				}
+			}
+		}()
+
+		upd := <-initUpd
+		netMgr = adnl.NewMultiNetReader(upd.Tunnel)
+		gate = adnl.NewGatewayWithNetManager(ed25519.NewKeyFromSeed(cfg.PrivateKey), netMgr)
+
+		log.Info().Str("out_ip", upd.ExtIP.String()).Msg("Using tunnel")
+		ip = upd.ExtIP
+		port = upd.ExtPort
+	} else {
+		addr := cfg.ListenIP + ":" + strconv.Itoa(int(cfg.Port))
+		dl, err := adnl.DefaultListener(addr)
+		if err != nil {
+			log.Fatal().Err(err).Str("addr", addr).Msg("Failed to create listener")
+			return
+		}
+		netMgr = adnl.NewMultiNetReader(dl)
+		gate = adnl.NewGatewayWithNetManager(ed25519.NewKeyFromSeed(cfg.PrivateKey), netMgr)
+	}
+
+	gate.SetAddressList([]*address.UDP{
+		{
+			IP:   ip.To4(),
+			Port: int32(port),
+		},
+	})
+
 	_, dhtAdnlKey, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to generate key for DHT")
 	}
 
-	dhtGateway := adnl.NewGateway(dhtAdnlKey)
+	dhtGateway := adnl.NewGatewayWithNetManager(dhtAdnlKey, netMgr)
 	err = dhtGateway.StartClient()
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to start ADNL gateway client")
@@ -168,59 +277,6 @@ func main() {
 	dhtClient, err := dht.NewClientFromConfig(dhtGateway, netCfg)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to create DHT client from config")
-	}
-
-	var gate *adnl.Gateway
-	if *TunnelConfig != "" {
-		data, err := os.ReadFile(*TunnelConfig)
-		if err != nil {
-			if os.IsNotExist(err) {
-				if _, err = tunnelConfig.GenerateClientConfig(*TunnelConfig); err != nil {
-					log.Error().Err(err).Msg("Failed to generate tunnel config")
-					os.Exit(1)
-				}
-				log.Info().Msg("Generated tunnel config; fill it with the desired route and restart")
-				os.Exit(0)
-			}
-			log.Fatal().Err(err).Msg("Failed to load tunnel config")
-		}
-
-		var tunCfg tunnelConfig.ClientConfig
-		if err = json.Unmarshal(data, &tunCfg); err != nil {
-			log.Fatal().Err(err).Msg("Failed to parse tunnel config")
-		}
-
-		tun, port, ip, err := tunnel.PrepareTunnel(&tunCfg, netCfg)
-		if err != nil {
-			log.Fatal().Err(err).Msg("Failed to prepare tunnel")
-		}
-
-		gate = adnl.NewGatewayWithListener(ed25519.NewKeyFromSeed(cfg.PrivateKey), func(addr string) (net.PacketConn, error) {
-			return tun, nil
-		})
-		gate.SetAddressList([]*address.UDP{
-			{
-				IP:   ip,
-				Port: int32(port),
-			},
-		})
-
-		tun.SetOutAddressChangedHandler(func(addr *net.UDPAddr) {
-			gate.SetAddressList([]*address.UDP{
-				{
-					IP:   addr.IP,
-					Port: int32(addr.Port),
-				},
-			})
-		})
-	} else {
-		gate = adnl.NewGateway(ed25519.NewKeyFromSeed(cfg.PrivateKey))
-		gate.SetAddressList([]*address.UDP{
-			{
-				IP:   net.ParseIP(cfg.ExternalIP).To4(),
-				Port: int32(cfg.Port),
-			},
-		})
 	}
 
 	u, err := url.Parse(cfg.ProxyPass)
@@ -253,10 +309,27 @@ func main() {
 		setupDomain(client, *FlagDomain, s.Address())
 	}
 
-	log.Info().Str("address", addr+".adnl").Msg("Starting server")
-	if err = s.ListenAndServe(fmt.Sprintf("%s:%d", cfg.ListenIP, cfg.Port)); err != nil {
-		log.Fatal().Err(err).Msg("Failed to listen and serve")
+	go func() {
+		log.Info().Str("address", addr+".adnl").Msg("Starting server")
+		if err = s.ListenAndServe(fmt.Sprintf("%s:%d", cfg.ListenIP, cfg.Port)); err != nil {
+			log.Fatal().Err(err).Msg("Failed to listen and serve")
+		}
+	}()
+
+	stopChan := make(chan os.Signal, 1)
+	signal.Notify(stopChan, os.Interrupt, syscall.SIGTERM)
+
+	<-stopChan
+
+	stop()
+
+	log.Info().Msg("Received stop signal, shutting down...")
+	if *EnableTunnel {
+		log.Info().Msg("Stopping tunnel...")
+		<-tunnelCtx.Done()
 	}
+
+	log.Info().Msg("Server stopped")
 }
 
 func getPublicIP() (string, error) {
@@ -285,20 +358,26 @@ func getPublicIP() (string, error) {
 func loadConfig() (*Config, error) {
 	var cfg Config
 
+	save := false
 	file := "./config.json"
 	data, err := os.ReadFile(file)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+
 		var srvKey ed25519.PrivateKey
 		_, srvKey, err = ed25519.GenerateKey(nil)
 		if err != nil {
 			return nil, err
 		}
+		cfg.Version = 1
 		cfg.PrivateKey = srvKey.Seed()
 		cfg.NetworkConfigURL = "https://ton.org/global.config.json"
 
 		cfg.ExternalIP, err = getPublicIP()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to get public ip: %w", err)
 		}
 		cfg.ListenIP = "0.0.0.0"
 
@@ -306,7 +385,35 @@ func loadConfig() (*Config, error) {
 		cfg.Port = 9000 + (crc16.Checksum([]byte(cfg.ExternalIP), crc16.MakeTable(crc16.CRC16_XMODEM)) % 5000)
 
 		cfg.ProxyPass = "http://127.0.0.1:80/"
+		tc, err := tunnelConfig.GenerateClientConfig()
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate tunnel config: %w", err)
+		}
 
+		cfg.TunnelConfig = *tc
+		save = true
+	} else {
+		err = json.Unmarshal(data, &cfg)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if cfg.Version < 1 {
+		tc, err := tunnelConfig.GenerateClientConfig()
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate tunnel config: %w", err)
+		}
+		cfg.Version = 1
+		cfg.TunnelConfig = *tc
+
+		if cfg.NetworkConfigURL == "" {
+			cfg.NetworkConfigURL = "https://ton-blockchain.github.io/global.config.json"
+		}
+		save = true
+	}
+
+	if save {
 		data, err = json.MarshalIndent(cfg, "", "\t")
 		if err != nil {
 			return nil, err
@@ -316,18 +423,6 @@ func loadConfig() (*Config, error) {
 		if err != nil {
 			return nil, err
 		}
-
-		return &cfg, nil
-	}
-
-	err = json.Unmarshal(data, &cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	// backwards compatibility with old configs
-	if cfg.NetworkConfigURL == "" {
-		cfg.NetworkConfigURL = "https://ton.org/global.config.json"
 	}
 
 	cfg.ExternalIP = envOrVal("EXTERNAL_IP", cfg.ExternalIP).(string)
