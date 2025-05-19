@@ -15,79 +15,51 @@ type payloadStream struct {
 }
 
 type dataStreamer struct {
-	buf []byte
+	parts  chan []byte
+	closer chan struct{}
 
-	parts    chan []byte
-	closer   chan bool
+	mx      sync.Mutex
+	readMx  sync.Mutex
+	writeMx sync.Mutex
+
+	buf      []byte
 	finished bool
 	closed   bool
-
-	readerLock sync.Mutex
-	writerLock sync.Mutex
-	closerLock sync.Mutex
 }
 
 func newDataStreamer() *dataStreamer {
 	return &dataStreamer{
-		parts:  make(chan []byte, 1),
-		closer: make(chan bool, 1),
+		parts:  make(chan []byte, 16),
+		closer: make(chan struct{}),
 	}
 }
 
-func (d *dataStreamer) Read(p []byte) (n int, err error) {
-	d.readerLock.Lock()
-	defer d.readerLock.Unlock()
+func (d *dataStreamer) Read(p []byte) (int, error) {
+	d.readMx.Lock()
+	defer d.readMx.Unlock()
 
-	for {
+	n := 0
+	for n < len(p) {
 		if len(d.buf) == 0 {
 			select {
-			case d.buf = <-d.parts:
-				if d.buf == nil {
-					if d.finished {
-						return n, io.EOF
-					}
-					// flush
+			case chunk, ok := <-d.parts:
+				if !ok {
+					return n, io.EOF
+				}
+				if chunk == nil {
 					return n, nil
 				}
+				d.buf = chunk
 			case <-d.closer:
 				return n, io.ErrUnexpectedEOF
 			}
 		}
 
-		if n == len(p) {
-			return n, nil
-		}
-
 		copied := copy(p[n:], d.buf)
 		d.buf = d.buf[copied:]
-
 		n += copied
 	}
-}
-
-func (d *dataStreamer) Close() error {
-	d.closerLock.Lock()
-	defer d.closerLock.Unlock()
-
-	if !d.closed {
-		d.closed = true
-		close(d.closer)
-	}
-
-	return nil
-}
-
-// FlushReader - forces Read to return current state
-func (d *dataStreamer) FlushReader() {
-	d.writerLock.Lock()
-	defer d.writerLock.Unlock()
-
-	select {
-	case d.parts <- nil:
-	case <-d.closer:
-	}
-
-	return
+	return n, nil
 }
 
 func (d *dataStreamer) Write(data []byte) (int, error) {
@@ -95,31 +67,64 @@ func (d *dataStreamer) Write(data []byte) (int, error) {
 		return 0, nil
 	}
 
-	d.writerLock.Lock()
-	defer d.writerLock.Unlock()
+	d.writeMx.Lock()
+	defer d.writeMx.Unlock()
 
+	d.mx.Lock()
 	if d.finished {
+		d.mx.Unlock()
 		return 0, io.ErrClosedPipe
 	}
+	d.mx.Unlock()
 
-	tmp := make([]byte, len(data))
-	copy(tmp, data)
+	chunk := append([]byte(nil), data...)
 
 	select {
-	case d.parts <- tmp:
+	case d.parts <- chunk:
+		return len(data), nil
 	case <-d.closer:
 		return 0, io.ErrClosedPipe
 	}
+}
 
-	return len(data), nil
+func (d *dataStreamer) FlushReader() {
+	d.mx.Lock()
+	defer d.mx.Unlock()
+
+	if d.finished {
+		return
+	}
+
+	select {
+	case d.parts <- nil:
+	default:
+	}
 }
 
 func (d *dataStreamer) Finish() {
-	d.writerLock.Lock()
-	defer d.writerLock.Unlock()
+	d.writeMx.Lock()
+	defer d.writeMx.Unlock()
 
-	if !d.finished {
-		d.finished = true
-		close(d.parts)
+	d.mx.Lock()
+	if d.finished {
+		d.mx.Unlock()
+		return
 	}
+	d.finished = true
+	d.mx.Unlock()
+
+	close(d.parts)
+}
+
+func (d *dataStreamer) Close() error {
+	d.mx.Lock()
+	if d.closed {
+		d.mx.Unlock()
+		return nil
+	}
+	d.closed = true
+	d.mx.Unlock()
+
+	close(d.closer)
+	return nil
 }
