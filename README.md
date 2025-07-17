@@ -9,29 +9,31 @@ It makes your website accessible inside The Open Network!
 ### Install
 
 Using linux based server:
+
 ```sh
 wget https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-linux-amd64
 chmod +x tonutils-reverse-proxy-linux-amd64
 ```
 
 Or download a binary for your OS:
-   * [Linux AMD64](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-linux-amd64)
-   * [Linux ARM64](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-linux-arm64)
-   * [Windows x64](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-windows-x64.exe)
-   * [Mac Intel](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-mac-amd64)
-   * [Mac Apple Silicon](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-mac-arm64) 
+
+* [Linux AMD64](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-linux-amd64)
+* [Linux ARM64](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-linux-arm64)
+* [Windows x64](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-windows-x64.exe)
+* [Mac Intel](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-mac-amd64)
+* [Mac Apple Silicon](https://github.com/ton-utils/reverse-proxy/releases/latest/download/tonutils-reverse-proxy-mac-arm64)
 
 ### Run
 
 Run with domain configuration, and follow the steps:
 
 ```sh
-./tonutils-reverse-proxy-linux-amd64 --domain your-domain.ton 
+./tonutils-reverse-proxy-linux-amd64 --domain your-domain.ton
 ```
 
-<img width="500" alt="yes1" src="https://user-images.githubusercontent.com/9332353/210967656-182b0d0f-6954-49c9-bf8a-40f5b4a61aa7.png">
+![yes1](https://user-images.githubusercontent.com/9332353/210967656-182b0d0f-6954-49c9-bf8a-40f5b4a61aa7.png)
 
-Scan QR code from your terminal using Tonkeeper, Tonhub or any other wallet, execute transaction. Your domain will be linked to your site. 
+Scan QR code from your terminal using Tonkeeper, Tonhub or any other wallet, execute transaction. Your domain will be linked to your site.
 
 If for some reason you cannot scan QR code, add `-tx-url` flag, so it will be displayed as `ton://` url for transaction.
 
@@ -45,7 +47,7 @@ Alternatively, you can run in simple mode, with .adnl domain, if you don't have 
 
 ##### Use
 
-Now anyone can access your TON Site! Using ADNL address or domain. 
+Now anyone can access your TON Site! Using ADNL address or domain.
 
 If you want to change some settings, like proxy pass url - open `config.json` file, edit and restart proxy. Default proxy pass url is `http://127.0.0.1:80/`
 
@@ -56,7 +58,7 @@ Proxy adds additional headers:
 
 #### Can I have multiple domains on single reverse-proxy?
 
-Yes! You can run any number of sites within single reverse-proxy, just link all your domains to same ADNL address. 
+Yes! You can run any number of sites within single reverse-proxy, just link all your domains to same ADNL address.
 You can run reverse-proxy with `-domain` flag one by one for all your domains and execute transaction. `-domain` flag is needed only for linking step, for further launches you are not required to specify it, your domains will remain linked.
 
 #### I'm getting error code 651: too big masterchain block seqno
