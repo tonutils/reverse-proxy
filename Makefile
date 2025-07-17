@@ -1,6 +1,6 @@
 .PHONY: all build
 
-ver := $(shell git log -1 --pretty=format:"%h-%as")
+ver := $(shell git describe --tags --always --dirty)
 
 build:
 	go build -ldflags "-w -s -X main.GitCommit=$(ver)" -o build/tonutils-reverse-proxy cmd/proxy/main.go
