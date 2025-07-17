@@ -1,11 +1,13 @@
 module github.com/ton-utils/reverse-proxy
 
-go 1.19
+go 1.23.3
 
 require (
-	github.com/mdp/qrterminal/v3 v3.2.0
-	github.com/sigurn/crc16 v0.0.0-20211026045750-20ab5afb07e3
-	github.com/xssnick/tonutils-go v1.10.2
+	github.com/mdp/qrterminal/v3 v3.0.0
+	github.com/rs/zerolog v1.34.0
+	github.com/sigurn/crc16 v0.0.0-20240131213347-83fcde1e29d1
+	github.com/ton-blockchain/adnl-tunnel v0.1.6
+	github.com/xssnick/tonutils-go v1.14.0
 )
 
 require (
