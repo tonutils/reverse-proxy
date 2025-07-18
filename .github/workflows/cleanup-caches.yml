@@ -4,9 +4,15 @@ on:
     types:
       - closed
 
+
 jobs:
   cleanup:
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: write
+
     steps:
       - name: Cleanup
         run: |
