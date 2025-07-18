@@ -64,8 +64,8 @@ github.com/xssnick/raptorq v1.0.0 h1:l77lntIV/W/SV9rZjF4wRpIhikQm8nBHtB3h+qiu2cM
 github.com/xssnick/raptorq v1.0.0/go.mod h1:kgEVVsZv2hP+IeV7C7985KIFsDdvYq2ARW234SBA9Q4=
 github.com/xssnick/ton-payment-network v0.3.0 h1:gfgclFoAbtPlQjgzuek68m2tUqMSJOVAZJU1z4xHplQ=
 github.com/xssnick/ton-payment-network v0.3.0/go.mod h1:ZI0Ihq2ziUOUlQOc74jtEN40Yg98hBlAoz+WdelwNws=
-github.com/xssnick/tonutils-go v1.14.0 h1:9+WXLKleINMWTSBN/uRJuE3d2BRYtxDh55hCG5PYCBE=
-github.com/xssnick/tonutils-go v1.14.0/go.mod h1:68xwWjpoGGqiTbLJ0gT63sKu1Z1moCnDLLzA+DKanIg=
+github.com/xssnick/tonutils-go v1.14.1-0.20250718101737-cc788497edc8 h1:TP4oV+8yBSW1EBTGx41KeiXdOlgjOuNnIu9ORQI7pPw=
+github.com/xssnick/tonutils-go v1.14.1-0.20250718101737-cc788497edc8/go.mod h1:68xwWjpoGGqiTbLJ0gT63sKu1Z1moCnDLLzA+DKanIg=
 golang.org/x/crypto v0.40.0 h1:r4x+VvoG5Fm+eJcxMaY8CQM7Lb0l1lsmjGBQ6s8BfKM=
 golang.org/x/crypto v0.40.0/go.mod h1:Qr1vMER5WyS2dfPHAlsOj01wgLbsyWtFn/aY+5+ZdxY=
 golang.org/x/net v0.0.0-20180906233101-161cd47e91fd/go.mod h1:mL1N/T3taQHkDXs73rZJwtUhF3w3ftmwwsq0BUmARs4=
