@@ -139,7 +139,7 @@ func (s *Server) ListenAndServe(listenAddr string) error {
 			switch query.Data.(type) {
 			case GetCapabilities:
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				err := client.Answer(ctx, query.ID, &Capabilities{Value: 0}) // CapabilityRLDP2
+				err := client.Answer(ctx, query.ID, &Capabilities{Value: CapabilityRLDP2})
 				cancel()
 				if err != nil {
 					return fmt.Errorf("failed to send capabilities answer: %w", err)
