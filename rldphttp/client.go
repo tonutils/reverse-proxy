@@ -15,11 +15,11 @@ import (
 	"time"
 )
 
-const _ChunkSize = 1 << 17
+const _ChunkSize = (1 << 21) - (1 << 11)
 const _RLDPMaxAnswerSize = 2*_ChunkSize + 1024
 
 type DHT interface {
-	StoreAddress(ctx context.Context, addresses address.List, ttl time.Duration, ownerKey ed25519.PrivateKey, copies int) (int, []byte, error)
+	StoreAddress(ctx context.Context, addresses address.List, ttl time.Duration, ownerKey ed25519.PrivateKey) (int, []byte, error)
 	FindAddresses(ctx context.Context, key []byte) (*address.List, ed25519.PublicKey, error)
 	Close()
 }
@@ -80,16 +80,29 @@ func (r *rldpInfo) destroyClient(rl RLDP) {
 }
 
 func handleGetPart(req GetNextPayloadPart, stream *payloadStream) (*PayloadPart, error) {
-	stream.mx.Lock()
-	defer stream.mx.Unlock()
+	if req.Seqno < 0 {
+		return nil, fmt.Errorf("failed to get part for stream %s, seqno should be >= 0", hex.EncodeToString(req.ID))
+	}
+	if req.MaxChunkSize <= 0 {
+		return nil, fmt.Errorf("failed to get part for stream %s, max chunk size should be > 0", hex.EncodeToString(req.ID))
+	}
+	chunkSize := req.MaxChunkSize
+	if chunkSize > _ChunkSize {
+		chunkSize = _ChunkSize
+	}
 
-	offset := int(req.Seqno * req.MaxChunkSize)
-	if offset != stream.nextOffset {
-		return nil, fmt.Errorf("failed to get part for stream %s, incorrect offset %d, should be %d", hex.EncodeToString(req.ID), offset, stream.nextOffset)
+	stream.readMx.Lock()
+	defer stream.readMx.Unlock()
+
+	stream.mx.Lock()
+	expectedSeqno := stream.nextSeqno
+	stream.mx.Unlock()
+	if req.Seqno != expectedSeqno {
+		return nil, fmt.Errorf("failed to get part for stream %s, incorrect seqno %d, should be %d", hex.EncodeToString(req.ID), req.Seqno, expectedSeqno)
 	}
 
 	var last bool
-	data := make([]byte, req.MaxChunkSize)
+	data := make([]byte, int(chunkSize))
 	n, err := stream.Data.Read(data)
 	if err != nil {
 		if err != io.EOF {
@@ -97,7 +110,10 @@ func handleGetPart(req GetNextPayloadPart, stream *payloadStream) (*PayloadPart,
 		}
 		last = true
 	}
-	stream.nextOffset += n
+
+	stream.mx.Lock()
+	stream.nextSeqno++
+	stream.mx.Unlock()
 
 	return &PayloadPart{
 		Data:    data[:n],

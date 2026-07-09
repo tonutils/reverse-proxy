@@ -218,12 +218,12 @@ func main() {
 					e.Tunnel.SetOutAddressChangedHandler(func(addr *net.UDPAddr) {
 						log.Info().Str("addr", addr.IP.String()).Int("port", addr.Port).Msg("Out address updated")
 
-						gate.SetAddressList([]*address.UDP{
-							{
-								IP:   addr.IP,
-								Port: int32(addr.Port),
-							},
-						})
+						adnlAddr, err := address.NewAddress(addr.IP, int32(addr.Port))
+						if err != nil {
+							log.Error().Err(err).Str("addr", addr.String()).Msg("Failed to build tunnel ADNL address")
+							return
+						}
+						gate.SetAddressList([]address.Address{adnlAddr})
 					})
 
 					once.Do(func() {
@@ -255,12 +255,11 @@ func main() {
 		gate = adnl.NewGatewayWithNetManager(ed25519.NewKeyFromSeed(cfg.PrivateKey), netMgr)
 	}
 
-	gate.SetAddressList([]*address.UDP{
-		{
-			IP:   ip.To4(),
-			Port: int32(port),
-		},
-	})
+	adnlAddr, err := address.NewAddress(ip, int32(port))
+	if err != nil {
+		log.Fatal().Err(err).Str("ip", cfg.ExternalIP).Uint16("port", port).Msg("Failed to build ADNL address")
+	}
+	gate.SetAddressList([]address.Address{adnlAddr})
 
 	_, dhtAdnlKey, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -293,9 +292,24 @@ func main() {
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(u)
-	if *FlagAllowInsecureHttps {
-		proxy.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+	proxy.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: *FlagAllowInsecureHttps}}
+
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		for _, c := range resp.Header["Set-Cookie"] {
+			name := "<malformed>"
+			if idx := strings.IndexByte(c, '='); idx > 0 {
+				name = c[:idx]
+			}
+			log.Warn().Str("url", resp.Request.URL.String()).Int("code", resp.StatusCode).Str("set_cookie_name", name).Msg("Upstream Set-Cookie")
+		}
+
+		if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+			loc := resp.Header.Get("Location")
+			log.Debug().Str("redirect", loc).Msg("Upstream redirect preserved")
+		}
+		return nil
 	}
+
 	s := rldphttp.NewServer(ed25519.NewKeyFromSeed(cfg.PrivateKey), gate, dhtClient, Handler{proxy})
 
 	addr, err := rldphttp.SerializeADNLAddress(s.Address())
@@ -332,18 +346,32 @@ func main() {
 }
 
 func getPublicIP() (string, error) {
-	req, err := http.Get("http://ip-api.com/json/")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.ipify.org?format=json", nil)
 	if err != nil {
 		return "", err
 	}
-	defer req.Body.Close()
 
-	body, err := io.ReadAll(req.Body)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("public ip service returned %s", resp.Status)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return "", err
 	}
 
 	var ip struct {
+		IP    string `json:"ip"`
 		Query string
 	}
 	err = json.Unmarshal(body, &ip)
@@ -351,7 +379,14 @@ func getPublicIP() (string, error) {
 		return "", err
 	}
 
-	return ip.Query, nil
+	if ip.IP == "" {
+		ip.IP = ip.Query
+	}
+	if net.ParseIP(ip.IP) == nil {
+		return "", fmt.Errorf("public ip service returned invalid ip `%s`", ip.IP)
+	}
+
+	return ip.IP, nil
 }
 
 func loadConfig() (*Config, error) {
@@ -418,7 +453,7 @@ func loadConfig() (*Config, error) {
 			return nil, err
 		}
 
-		err = os.WriteFile(file, data, 0644) // rw-r--r--
+		err = os.WriteFile(file, data, 0600) // rw-------
 		if err != nil {
 			return nil, err
 		}
@@ -430,6 +465,9 @@ func loadConfig() (*Config, error) {
 	cfg.ProxyPass = envOrVal("PROXY_PASS", cfg.ProxyPass).(string)
 	cfg.PrivateKey = envOrVal("PRIVATE_KEY", cfg.PrivateKey).([]byte)
 	cfg.NetworkConfigURL = envOrVal("NETWORK_CONFIG_URL", cfg.NetworkConfigURL).(string)
+	if len(cfg.PrivateKey) != ed25519.SeedSize {
+		return nil, fmt.Errorf("private key seed should be %d bytes, got %d", ed25519.SeedSize, len(cfg.PrivateKey))
+	}
 
 	return &cfg, nil
 }

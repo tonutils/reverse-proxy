@@ -7,15 +7,28 @@ import (
 )
 
 type payloadStream struct {
-	nextOffset int
-	Data       io.ReadCloser
-	ValidTill  time.Time
+	nextSeqno int32
+	Data      io.ReadCloser
+	ValidTill time.Time
 
-	mx sync.Mutex
+	mx     sync.Mutex
+	readMx sync.Mutex
+}
+
+type streamChunk struct {
+	data []byte
+}
+
+var streamChunkPool = sync.Pool{
+	New: func() any {
+		return &streamChunk{
+			data: make([]byte, 0, _ChunkSize),
+		}
+	},
 }
 
 type dataStreamer struct {
-	parts  chan []byte
+	parts  chan *streamChunk
 	closer chan struct{}
 
 	mx      sync.Mutex
@@ -23,15 +36,46 @@ type dataStreamer struct {
 	writeMx sync.Mutex
 
 	buf      []byte
+	bufChunk *streamChunk
 	finished bool
 	closed   bool
 }
 
 func newDataStreamer() *dataStreamer {
 	return &dataStreamer{
-		parts:  make(chan []byte, 16),
+		parts:  make(chan *streamChunk, 16),
 		closer: make(chan struct{}),
 	}
+}
+
+func getStreamChunk(size int) *streamChunk {
+	if size <= _ChunkSize {
+		chunk := streamChunkPool.Get().(*streamChunk)
+		chunk.data = chunk.data[:size]
+		return chunk
+	}
+
+	return &streamChunk{
+		data: make([]byte, size),
+	}
+}
+
+func putStreamChunk(chunk *streamChunk) {
+	if chunk == nil || cap(chunk.data) != _ChunkSize {
+		return
+	}
+
+	chunk.data = chunk.data[:0]
+	streamChunkPool.Put(chunk)
+}
+
+func (d *dataStreamer) releaseReadChunk() {
+	if d.bufChunk == nil || len(d.buf) > 0 {
+		return
+	}
+
+	putStreamChunk(d.bufChunk)
+	d.bufChunk = nil
 }
 
 func (d *dataStreamer) Read(p []byte) (int, error) {
@@ -41,6 +85,8 @@ func (d *dataStreamer) Read(p []byte) (int, error) {
 	n := 0
 	for n < len(p) {
 		if len(d.buf) == 0 {
+			d.releaseReadChunk()
+
 			select {
 			case chunk, ok := <-d.parts:
 				if !ok {
@@ -49,7 +95,8 @@ func (d *dataStreamer) Read(p []byte) (int, error) {
 				if chunk == nil {
 					return n, nil
 				}
-				d.buf = chunk
+				d.buf = chunk.data
+				d.bufChunk = chunk
 			case <-d.closer:
 				return n, io.ErrUnexpectedEOF
 			}
@@ -58,6 +105,7 @@ func (d *dataStreamer) Read(p []byte) (int, error) {
 		copied := copy(p[n:], d.buf)
 		d.buf = d.buf[copied:]
 		n += copied
+		d.releaseReadChunk()
 	}
 	return n, nil
 }
@@ -70,34 +118,61 @@ func (d *dataStreamer) Write(data []byte) (int, error) {
 	d.writeMx.Lock()
 	defer d.writeMx.Unlock()
 
+	written := 0
+	for len(data) > 0 {
+		d.mx.Lock()
+		if d.finished || d.closed {
+			d.mx.Unlock()
+			if written > 0 {
+				return written, io.ErrClosedPipe
+			}
+			return 0, io.ErrClosedPipe
+		}
+		d.mx.Unlock()
+
+		size := len(data)
+		if size > _ChunkSize {
+			size = _ChunkSize
+		}
+		chunk := getStreamChunk(size)
+		copy(chunk.data, data[:size])
+
+		select {
+		case d.parts <- chunk:
+			written += size
+			data = data[size:]
+		case <-d.closer:
+			putStreamChunk(chunk)
+			if written > 0 {
+				return written, io.ErrClosedPipe
+			}
+			return 0, io.ErrClosedPipe
+		}
+	}
+
+	return written, nil
+}
+
+func (d *dataStreamer) FlushReader() error {
+	d.writeMx.Lock()
+	defer d.writeMx.Unlock()
+
 	d.mx.Lock()
 	if d.finished {
 		d.mx.Unlock()
-		return 0, io.ErrClosedPipe
+		return nil
+	}
+	if d.closed {
+		d.mx.Unlock()
+		return io.ErrClosedPipe
 	}
 	d.mx.Unlock()
 
-	chunk := append([]byte(nil), data...)
-
-	select {
-	case d.parts <- chunk:
-		return len(data), nil
-	case <-d.closer:
-		return 0, io.ErrClosedPipe
-	}
-}
-
-func (d *dataStreamer) FlushReader() {
-	d.mx.Lock()
-	defer d.mx.Unlock()
-
-	if d.finished {
-		return
-	}
-
 	select {
 	case d.parts <- nil:
-	default:
+		return nil
+	case <-d.closer:
+		return io.ErrClosedPipe
 	}
 }
 
