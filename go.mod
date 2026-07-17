@@ -3,11 +3,11 @@ module github.com/ton-utils/reverse-proxy
 go 1.26.0
 
 require (
-	github.com/mdp/qrterminal/v3 v3.0.0
+	github.com/mdp/qrterminal/v3 v3.2.1
 	github.com/rs/zerolog v1.35.1
 	github.com/sigurn/crc16 v0.0.0-20240131213347-83fcde1e29d1
-	github.com/ton-blockchain/adnl-tunnel v0.2.0
-	github.com/xssnick/tonutils-go v1.17.1-0.20260709142412-16e047642e6b
+	github.com/ton-blockchain/adnl-tunnel v0.2.1
+	github.com/xssnick/tonutils-go v1.18.0
 )
 
 require (
@@ -26,10 +26,11 @@ require (
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/syndtr/goleveldb v1.0.0 // indirect
 	github.com/xssnick/raptorq v1.5.0 // indirect
-	github.com/xssnick/ton-payment-network v1.3.0 // indirect
+	github.com/xssnick/ton-payment-network v1.3.1 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
-	golang.org/x/crypto v0.53.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/term v0.45.0 // indirect
 	google.golang.org/protobuf v1.36.8 // indirect
 	rsc.io/qr v0.2.0 // indirect
 )
