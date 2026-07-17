@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const _ChunkSize = (1 << 21) - (1 << 11)
+const _ChunkSize = 1 << 20
 const _RLDPMaxAnswerSize = 2*_ChunkSize + 1024
 
 type DHT interface {
