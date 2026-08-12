@@ -7,7 +7,7 @@ require (
 	github.com/rs/zerolog v1.35.1
 	github.com/sigurn/crc16 v0.0.0-20240131213347-83fcde1e29d1
 	github.com/ton-blockchain/adnl-tunnel v0.2.1
-	github.com/xssnick/tonutils-go v1.18.0
+	github.com/xssnick/tonutils-go v1.18.1-0.20260801052814-fc795b3d6ca7
 )
 
 require (
@@ -25,7 +25,7 @@ require (
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/syndtr/goleveldb v1.0.0 // indirect
-	github.com/xssnick/raptorq v1.5.0 // indirect
+	github.com/xssnick/raptorq v1.5.1 // indirect
 	github.com/xssnick/ton-payment-network v1.3.1 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	golang.org/x/crypto v0.54.0 // indirect

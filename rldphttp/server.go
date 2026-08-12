@@ -2,9 +2,11 @@ package rldphttp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"github.com/xssnick/tonutils-go/adnl"
 	adnladdress "github.com/xssnick/tonutils-go/adnl/address"
@@ -17,6 +19,7 @@ import (
 	"net/url"
 	"reflect"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +35,7 @@ type Server struct {
 	activeRequests *activeRequestRegistry
 	adnlServer     *adnl.Gateway
 	externalIp     net.IP
+	dispatcher     *requestDispatcher
 
 	closer chan bool
 	closed bool
@@ -56,15 +60,104 @@ type writerBuff struct {
 	queryId     []byte
 	requestId   []byte
 	transferId  []byte
+	lease       *requestLease
+	registered  *payloadStream
 
 	flushReaderPendingBytes int64
 	mx                      sync.Mutex
 }
 
 const (
-	activeRequestShardCount = 64
-	maxHTTPHeaderCount      = 256
+	// DefaultMaxConcurrentRequests is the server-wide admission limit used by NewServer.
+	DefaultMaxConcurrentRequests = 20_000
+	activeRequestShardCount      = 64
+	maxHTTPHeaderCount           = 256
 )
+
+var (
+	// ErrTooManyConcurrentRequests is returned without blocking when the server-wide limit is full.
+	ErrTooManyConcurrentRequests = errors.New("too many concurrent RLDP HTTP requests")
+	// ErrServerStopped is returned when a query arrives after Server.Stop.
+	ErrServerStopped                 = errors.New("RLDP HTTP server is stopped")
+	errPayloadContinuationInProgress = errors.New("RLDP HTTP payload continuation is already in progress")
+)
+
+type requestDispatcher struct {
+	mx      sync.Mutex
+	active  int
+	limit   int
+	stopped bool
+}
+
+type requestLease struct {
+	dispatcher *requestDispatcher
+	mx         sync.Mutex
+	references int
+}
+
+func newRequestDispatcher(limit int) *requestDispatcher {
+	return &requestDispatcher{limit: limit}
+}
+
+func (d *requestDispatcher) acquire() error {
+	d.mx.Lock()
+	defer d.mx.Unlock()
+
+	if d.stopped {
+		return ErrServerStopped
+	}
+	if d.active >= d.limit {
+		return ErrTooManyConcurrentRequests
+	}
+	d.active++
+	return nil
+}
+
+func (d *requestDispatcher) checkRunning() error {
+	d.mx.Lock()
+	defer d.mx.Unlock()
+
+	if d.stopped {
+		return ErrServerStopped
+	}
+	return nil
+}
+
+func (d *requestDispatcher) release() {
+	d.mx.Lock()
+	d.active--
+	d.mx.Unlock()
+}
+
+func (d *requestDispatcher) stop() {
+	d.mx.Lock()
+	d.stopped = true
+	d.mx.Unlock()
+}
+
+func newRequestLease(dispatcher *requestDispatcher) *requestLease {
+	return &requestLease{
+		dispatcher: dispatcher,
+		references: 1,
+	}
+}
+
+func (l *requestLease) retainForResponse() {
+	l.mx.Lock()
+	l.references++
+	l.mx.Unlock()
+}
+
+func (l *requestLease) release() {
+	l.mx.Lock()
+	l.references--
+	releaseDispatcher := l.references == 0
+	l.mx.Unlock()
+
+	if releaseDispatcher {
+		l.dispatcher.release()
+	}
+}
 
 type activeRequestRegistry struct {
 	shards [activeRequestShardCount]activeRequestShard
@@ -102,11 +195,13 @@ func (r *activeRequestRegistry) shard(key string) *activeRequestShard {
 	return &r.shards[hash%activeRequestShardCount]
 }
 
-func (r *activeRequestRegistry) store(key string, stream *payloadStream) {
+func (r *activeRequestRegistry) store(key string, stream *payloadStream) *payloadStream {
 	shard := r.shard(key)
 	shard.mx.Lock()
+	previous := shard.streams[key]
 	shard.streams[key] = stream
 	shard.mx.Unlock()
+	return previous
 }
 
 func (r *activeRequestRegistry) getAndRefresh(key string, validTill time.Time) *payloadStream {
@@ -120,6 +215,25 @@ func (r *activeRequestRegistry) getAndRefresh(key string, validTill time.Time) *
 	return stream
 }
 
+func (r *activeRequestRegistry) claimContinuation(
+	key string,
+	validTill time.Time,
+) (stream *payloadStream, exists bool) {
+	shard := r.shard(key)
+	shard.mx.Lock()
+	defer shard.mx.Unlock()
+
+	stream = shard.streams[key]
+	if stream == nil {
+		return nil, false
+	}
+	if !stream.tryStartContinuation() {
+		return nil, true
+	}
+	stream.ValidTill = validTill
+	return stream, true
+}
+
 func (r *activeRequestRegistry) get(key string) *payloadStream {
 	shard := r.shard(key)
 	shard.mx.RLock()
@@ -128,11 +242,16 @@ func (r *activeRequestRegistry) get(key string) *payloadStream {
 	return stream
 }
 
-func (r *activeRequestRegistry) delete(key string) {
+func (r *activeRequestRegistry) deleteIfSame(key string, expected *payloadStream) bool {
 	shard := r.shard(key)
 	shard.mx.Lock()
+	defer shard.mx.Unlock()
+
+	if shard.streams[key] != expected {
+		return false
+	}
 	delete(shard.streams, key)
-	shard.mx.Unlock()
+	return true
 }
 
 func (r *activeRequestRegistry) expired(now time.Time) []*payloadStream {
@@ -149,6 +268,20 @@ func (r *activeRequestRegistry) expired(now time.Time) []*payloadStream {
 		shard.mx.Unlock()
 	}
 	return expired
+}
+
+func (r *activeRequestRegistry) drain() []*payloadStream {
+	var streams []*payloadStream
+	for i := range r.shards {
+		shard := &r.shards[i]
+		shard.mx.Lock()
+		for key, stream := range shard.streams {
+			delete(shard.streams, key)
+			streams = append(streams, stream)
+		}
+		shard.mx.Unlock()
+	}
+	return streams
 }
 
 func (r *activeRequestRegistry) len() int {
@@ -256,17 +389,42 @@ func sendHTTPErrorResponse(client RLDP, query *rldp.Query, transferId []byte, ve
 }
 
 func NewServer(key ed25519.PrivateKey, gate *adnl.Gateway, dht DHT, handler http.Handler) *Server {
-	s := &Server{
+	return newServer(key, gate, dht, handler, DefaultMaxConcurrentRequests)
+}
+
+// NewServerWithMaxConcurrentRequests creates a server with one concurrency limit shared by all peers.
+func NewServerWithMaxConcurrentRequests(
+	key ed25519.PrivateKey,
+	gate *adnl.Gateway,
+	dht DHT,
+	handler http.Handler,
+	maxConcurrentRequests int,
+) (*Server, error) {
+	if maxConcurrentRequests <= 0 {
+		return nil, fmt.Errorf("max concurrent requests must be greater than zero, got %d", maxConcurrentRequests)
+	}
+
+	return newServer(key, gate, dht, handler, maxConcurrentRequests), nil
+}
+
+func newServer(
+	key ed25519.PrivateKey,
+	gate *adnl.Gateway,
+	dht DHT,
+	handler http.Handler,
+	maxConcurrentRequests int,
+) *Server {
+	return &Server{
 		key:            key,
 		dht:            dht,
 		handler:        handler,
 		rldpInfos:      map[string]*rldpInfo{},
 		activeRequests: newActiveRequestRegistry(),
+		dispatcher:     newRequestDispatcher(maxConcurrentRequests),
 		closer:         make(chan bool, 1),
 		Timeout:        30 * time.Second,
 		adnlServer:     gate,
 	}
-	return s
 }
 
 func (s *Server) ListenAndServe(listenAddr string) error {
@@ -281,7 +439,7 @@ func (s *Server) ListenAndServe(listenAddr string) error {
 			now := time.Now()
 
 			for _, stream := range s.activeRequests.expired(now) {
-				_ = stream.Data.Close()
+				stream.finish()
 			}
 		}
 	}()
@@ -390,14 +548,72 @@ func (s *Server) Stop() (err error) {
 
 	if !s.closed {
 		s.closed = true
+		if s.dispatcher != nil {
+			s.dispatcher.stop()
+		}
 		close(s.closer)
-		s.dht.Close()
+		for _, stream := range s.activeRequests.drain() {
+			stream.finish()
+		}
+		if s.dht != nil {
+			s.dht.Close()
+		}
 
 		if s.adnlServer != nil {
 			err = s.adnlServer.Close()
 		}
 	}
 	return
+}
+
+func (s *Server) registerPayloadStream(
+	key string,
+	stream *payloadStream,
+	lease *requestLease,
+) error {
+	s.mx.RLock()
+	if s.closed {
+		s.mx.RUnlock()
+		return ErrServerStopped
+	}
+	if lease != nil {
+		lease.retainForResponse()
+		stream.lease = lease
+	}
+	previous := s.activeRequests.store(key, stream)
+	s.mx.RUnlock()
+
+	if previous != nil {
+		previous.finish()
+	}
+	return nil
+}
+
+func cloneQuery(query *rldp.Query) *rldp.Query {
+	cloned := *query
+	cloned.ID = bytes.Clone(query.ID)
+
+	switch data := query.Data.(type) {
+	case Request:
+		headers := data.Headers
+		data.ID = bytes.Clone(data.ID)
+		data.Method = strings.Clone(data.Method)
+		data.URL = strings.Clone(data.URL)
+		data.Version = strings.Clone(data.Version)
+		data.Headers = make([]Header, len(headers))
+		for i, header := range headers {
+			data.Headers[i] = Header{
+				Name:  strings.Clone(header.Name),
+				Value: strings.Clone(header.Value),
+			}
+		}
+		cloned.Data = data
+	case GetNextPayloadPart:
+		data.ID = bytes.Clone(data.ID)
+		cloned.Data = data
+	}
+
+	return &cloned
 }
 
 func (s *Server) handle(client RLDP, adnlId, addr string) func(transferId []byte, msg *rldp.Query) error {
@@ -410,125 +626,219 @@ func (s *Server) handle(client RLDP, adnlId, addr string) func(transferId []byte
 	netAddr := net.UDPAddrFromAddrPort(addrPort)
 
 	return func(transferId []byte, query *rldp.Query) error {
+		if query == nil {
+			return errors.New("nil RLDP HTTP query")
+		}
+
+		dispatcher := s.dispatcher
+		if dispatcher == nil {
+			return errors.New("RLDP HTTP request dispatcher is not initialized")
+		}
+
+		var lease *requestLease
+		var continuation *payloadStream
 		switch req := query.Data.(type) {
 		case Request:
-			uri, err := url.Parse(req.URL)
-			if err != nil {
-				Logger("bad HTTP request over RLDP: failed to parse url", req.URL, err)
-				return sendHTTPErrorResponse(client, query, transferId, req.Version, http.StatusBadRequest)
+			if err := dispatcher.acquire(); err != nil {
+				return err
 			}
-			uri.Scheme = "http"
-
-			headers, host, contentLen, err := parseRequestHeaders(req.Headers)
-			if err != nil {
-				Logger("bad HTTP request over RLDP:", err)
-				return sendHTTPErrorResponse(client, query, transferId, req.Version, http.StatusBadRequest)
-			}
-			if host != "" {
-				uri.Host = host
-			}
-			headers.Set("X-Adnl-Ip", netAddr.IP.String())
-			headers.Set("X-Adnl-Id", adnlId)
-
-			ctx, cancel := context.WithTimeout(context.Background(), s.Timeout)
-			defer cancel()
-
-			reqBody := newDataStreamer()
-			if req.Method == "CONNECT" ||
-				len(headers["Content-Length"]) > 0 ||
-				len(headers["Transfer-Encoding"]) > 0 {
-				// request should have payload, fetch it in parallel and write to stream
-				go func() {
-					if fetchErr := s.fetchPayload(ctx, req.ID, client, reqBody); fetchErr != nil {
-						reqBody.Close()
-						return
-					}
-					reqBody.Finish()
-				}()
-			} else {
-				reqBody.Finish()
-			}
-
-			httpReq := &http.Request{
-				Method:        req.Method,
-				URL:           uri,
-				Proto:         req.Version,
-				ProtoMajor:    1,
-				ProtoMinor:    1,
-				Header:        headers,
-				Body:          reqBody,
-				ContentLength: contentLen,
-				Host:          uri.Host,
-				RemoteAddr:    netAddr.IP.String(),
-				RequestURI:    uri.RequestURI(),
-			}
-
-			stream := newDataStreamer()
-
-			wb := &writerBuff{
-				client:      client,
-				server:      s,
-				stream:      stream,
-				maxAnswerSz: query.MaxAnswerSize,
-				timeout:     query.Timeout,
-				queryId:     query.ID,
-				requestId:   req.ID,
-				transferId:  transferId,
-			}
-
-			w := &respWriter{
-				writer:  bufio.NewWriterSize(wb, _ChunkSize),
-				wb:      wb,
-				headers: map[string][]string{},
-			}
-			wb.resp = w
-
-			s.handler.ServeHTTP(w, httpReq)
-			wb.handled = true
-			if w.err != nil {
-				return fmt.Errorf("failed to flush response for `%s`: %w", uri, w.err)
-			}
-			// flush write buffer, to commit data
-			err = w.writer.Flush()
-			if err != nil {
-				return fmt.Errorf("failed to flush response buffer for `%s`: %w", uri, err)
-			}
-
-			// if no data was committed - it will send empty response
-			err = wb.flush(nil, false)
-			if err != nil {
-				return fmt.Errorf("failed to flush response for `%s`: %w", uri, err)
-			}
-			stream.Finish()
+			lease = newRequestLease(dispatcher)
 		case GetNextPayloadPart:
+			// A payload-part query continues an already admitted logical HTTP
+			// request. Charging another slot here can deadlock a full server:
+			// every response writer holds a slot while getNext cannot drain it.
+			if err := dispatcher.checkRunning(); err != nil {
+				return err
+			}
 			requestKey := hex.EncodeToString(req.ID)
-			stream := s.activeRequests.getAndRefresh(requestKey, time.Now().Add(s.Timeout))
-
-			if stream == nil {
+			stream, exists := s.activeRequests.claimContinuation(
+				requestKey,
+				time.Now().Add(s.Timeout),
+			)
+			if !exists {
 				return fmt.Errorf("unknown request id %s", requestKey)
 			}
-
-			part, err := handleGetPart(req, stream)
-			if err != nil {
-				return fmt.Errorf("handle part err: %w", err)
+			if stream == nil {
+				return errPayloadContinuationInProgress
 			}
-
-			ctx, cancel := context.WithTimeout(context.Background(), s.Timeout)
-			err = client.SendAnswer(ctx, query.MaxAnswerSize, query.Timeout, query.ID, transferId, part)
-			cancel()
-			if err != nil {
-				s.activeRequests.delete(requestKey)
-				_ = stream.Data.Close()
-				return fmt.Errorf("failed to send answer: %w", err)
-			}
-
-			if part.IsLast {
-				s.activeRequests.delete(requestKey)
-				_ = stream.Data.Close()
-			}
+			continuation = stream
+		default:
+			return nil
 		}
+
+		// RLDP parses incoming TL data without copying it, so the goroutine must own
+		// every byte and string it reads after this callback returns.
+		ownedTransferId := bytes.Clone(transferId)
+		ownedQuery := cloneQuery(query)
+		go s.runQuery(lease, continuation, client, adnlId, netAddr, ownedTransferId, ownedQuery)
 		return nil
 	}
+}
+
+func (s *Server) runQuery(
+	lease *requestLease,
+	continuation *payloadStream,
+	client RLDP,
+	adnlId string,
+	netAddr *net.UDPAddr,
+	transferId []byte,
+	query *rldp.Query,
+) {
+	if lease != nil {
+		defer lease.release()
+	}
+	if continuation != nil {
+		defer continuation.finishContinuation()
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			Logger("panic while handling RLDP HTTP query: ", recovered, "\n", string(debug.Stack()))
+		}
+	}()
+
+	if err := s.handleQuery(lease, continuation, client, adnlId, netAddr, transferId, query); err != nil {
+		Logger("failed to handle RLDP HTTP query: ", err)
+	}
+}
+
+func (s *Server) handleQuery(
+	lease *requestLease,
+	continuation *payloadStream,
+	client RLDP,
+	adnlId string,
+	netAddr *net.UDPAddr,
+	transferId []byte,
+	query *rldp.Query,
+) error {
+	switch req := query.Data.(type) {
+	case Request:
+		uri, err := url.Parse(req.URL)
+		if err != nil {
+			Logger("bad HTTP request over RLDP: failed to parse url", req.URL, err)
+			return sendHTTPErrorResponse(client, query, transferId, req.Version, http.StatusBadRequest)
+		}
+		uri.Scheme = "http"
+
+		headers, host, contentLen, err := parseRequestHeaders(req.Headers)
+		if err != nil {
+			Logger("bad HTTP request over RLDP:", err)
+			return sendHTTPErrorResponse(client, query, transferId, req.Version, http.StatusBadRequest)
+		}
+		if host != "" {
+			uri.Host = host
+		}
+		headers.Set("X-Adnl-Ip", netAddr.IP.String())
+		headers.Set("X-Adnl-Id", adnlId)
+
+		ctx, cancel := context.WithTimeout(context.Background(), s.Timeout)
+		defer cancel()
+
+		reqBody := newDataStreamer()
+		if req.Method == "CONNECT" ||
+			len(headers["Content-Length"]) > 0 ||
+			len(headers["Transfer-Encoding"]) > 0 {
+			// request should have payload, fetch it in parallel and write to stream
+			go func() {
+				if fetchErr := s.fetchPayload(ctx, req.ID, client, reqBody); fetchErr != nil {
+					reqBody.Close()
+					return
+				}
+				reqBody.Finish()
+			}()
+		} else {
+			reqBody.Finish()
+		}
+
+		httpReq := &http.Request{
+			Method:        req.Method,
+			URL:           uri,
+			Proto:         req.Version,
+			ProtoMajor:    1,
+			ProtoMinor:    1,
+			Header:        headers,
+			Body:          reqBody,
+			ContentLength: contentLen,
+			Host:          uri.Host,
+			RemoteAddr:    netAddr.IP.String(),
+			RequestURI:    uri.RequestURI(),
+		}
+
+		stream := newDataStreamer()
+
+		wb := &writerBuff{
+			client:      client,
+			server:      s,
+			stream:      stream,
+			maxAnswerSz: query.MaxAnswerSize,
+			timeout:     query.Timeout,
+			queryId:     query.ID,
+			requestId:   req.ID,
+			transferId:  transferId,
+			lease:       lease,
+		}
+
+		w := &respWriter{
+			writer:  bufio.NewWriterSize(wb, _ChunkSize),
+			wb:      wb,
+			headers: map[string][]string{},
+		}
+		wb.resp = w
+		completed := false
+		defer func() {
+			if !completed {
+				wb.abortResponse()
+			}
+		}()
+
+		s.handler.ServeHTTP(w, httpReq)
+		wb.handled = true
+		if w.err != nil {
+			return fmt.Errorf("failed to flush response for `%s`: %w", uri, w.err)
+		}
+		// flush write buffer, to commit data
+		err = w.writer.Flush()
+		if err != nil {
+			return fmt.Errorf("failed to flush response buffer for `%s`: %w", uri, err)
+		}
+
+		// if no data was committed - it will send empty response
+		err = wb.flush(nil, false)
+		if err != nil {
+			return fmt.Errorf("failed to flush response for `%s`: %w", uri, err)
+		}
+		stream.Finish()
+		completed = true
+	case GetNextPayloadPart:
+		requestKey := hex.EncodeToString(req.ID)
+		stream := continuation
+		if stream == nil {
+			stream = s.activeRequests.getAndRefresh(requestKey, time.Now().Add(s.Timeout))
+		}
+
+		if stream == nil {
+			return fmt.Errorf("unknown request id %s", requestKey)
+		}
+
+		part, err := handleGetPart(req, stream)
+		if err != nil {
+			return fmt.Errorf("handle part err: %w", err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), s.Timeout)
+		err = client.SendAnswer(ctx, query.MaxAnswerSize, query.Timeout, query.ID, transferId, part)
+		cancel()
+		if err != nil {
+			s.activeRequests.deleteIfSame(requestKey, stream)
+			stream.finish()
+			return fmt.Errorf("failed to send answer: %w", err)
+		}
+
+		if part.IsLast {
+			s.activeRequests.deleteIfSame(requestKey, stream)
+			stream.finish()
+		}
+	}
+	return nil
 }
 
 func (s *Server) fetchPayload(ctx context.Context, requestID []byte, client RLDP, w io.Writer) error {
@@ -616,6 +926,15 @@ func (w *writerBuff) flushReader() error {
 	return w.stream.FlushReader()
 }
 
+func (w *writerBuff) abortResponse() {
+	if w.registered != nil {
+		w.server.activeRequests.deleteIfSame(hex.EncodeToString(w.requestId), w.registered)
+		w.registered.finish()
+		return
+	}
+	_ = w.stream.Close()
+}
+
 func (w *writerBuff) flush(payload []byte, forcePayload bool) error {
 	if w.headerSent {
 		return nil
@@ -651,11 +970,19 @@ func (w *writerBuff) flush(payload []byte, forcePayload bool) error {
 		}
 	}
 
+	var registeredStream *payloadStream
+	requestKey := hex.EncodeToString(w.requestId)
 	if hasPayload {
-		w.server.activeRequests.store(hex.EncodeToString(w.requestId), &payloadStream{
+		candidate := &payloadStream{
 			Data:      w.stream,
 			ValidTill: time.Now().Add(w.server.Timeout),
-		})
+		}
+		if err := w.server.registerPayloadStream(requestKey, candidate, w.lease); err != nil {
+			_ = w.stream.Close()
+			return fmt.Errorf("failed to register response stream: %w", err)
+		}
+		registeredStream = candidate
+		w.registered = candidate
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -668,10 +995,12 @@ func (w *writerBuff) flush(payload []byte, forcePayload bool) error {
 	})
 	cancel()
 	if err != nil {
-		if hasPayload {
-			w.server.activeRequests.delete(hex.EncodeToString(w.requestId))
+		if registeredStream != nil {
+			w.server.activeRequests.deleteIfSame(requestKey, registeredStream)
+			registeredStream.finish()
+		} else {
+			_ = w.stream.Close()
 		}
-		_ = w.stream.Close()
 		return fmt.Errorf("failed to send response for %s query: %w", hex.EncodeToString(w.queryId), err)
 	}
 

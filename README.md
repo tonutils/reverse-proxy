@@ -43,6 +43,12 @@ Alternatively, you can run in simple mode, with .adnl domain, if you don't have 
 ./tonutils-reverse-proxy-linux-amd64
 ```
 
+The proxy processes up to 20,000 RLDP HTTP requests concurrently across all peers by default. Override the process-wide limit with a positive value:
+
+```sh
+./tonutils-reverse-proxy-linux-amd64 --max-concurrent-requests 30000
+```
+
 ##### Use
 
 Now anyone can access your TON Site! Using ADNL address or domain. 

@@ -58,8 +58,15 @@ var FlagDebug = flag.Bool("debug", false, "more logs")
 var FlagAllowInsecureHttps = flag.Bool("allow-insecure-https", false, "allow insecure https")
 var FlagTxURL = flag.Bool("tx-url", false, "show set domain record url instead of qr")
 var EnableTunnel = flag.Bool("enable-tunnel", false, "enable tunnel mode, to host site with no public ip (should be configured first)")
+var FlagMaxConcurrentRequests = flag.Int(
+	"max-concurrent-requests",
+	rldphttp.DefaultMaxConcurrentRequests,
+	"maximum number of concurrent RLDP HTTP requests across all peers",
+)
 
 var GitCommit = "dev"
+
+const reverseProxyFlushInterval = 20 * time.Millisecond
 
 func envOrVal(env string, arg any) any {
 	var res = arg
@@ -130,6 +137,10 @@ func main() {
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout}).Level(zerolog.InfoLevel)
 	if *FlagDebug {
 		log.Logger = log.Logger.Level(zerolog.DebugLevel)
+	}
+	if *FlagMaxConcurrentRequests <= 0 {
+		log.Fatal().Int("max_concurrent_requests", *FlagMaxConcurrentRequests).
+			Msg("max-concurrent-requests must be greater than zero")
 	}
 
 	log.Info().Str("version", GitCommit).Msg("Starting Tonutils Reverse Proxy")
@@ -292,6 +303,7 @@ func main() {
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(u)
+	proxy.FlushInterval = reverseProxyFlushInterval
 	proxy.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: *FlagAllowInsecureHttps}}
 
 	proxy.ModifyResponse = func(resp *http.Response) error {
@@ -310,7 +322,16 @@ func main() {
 		return nil
 	}
 
-	s := rldphttp.NewServer(ed25519.NewKeyFromSeed(cfg.PrivateKey), gate, dhtClient, Handler{proxy})
+	s, err := rldphttp.NewServerWithMaxConcurrentRequests(
+		ed25519.NewKeyFromSeed(cfg.PrivateKey),
+		gate,
+		dhtClient,
+		Handler{proxy},
+		*FlagMaxConcurrentRequests,
+	)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to configure RLDP HTTP server")
+	}
 
 	addr, err := rldphttp.SerializeADNLAddress(s.Address())
 	if err != nil {
@@ -323,7 +344,9 @@ func main() {
 	}
 
 	go func() {
-		log.Info().Str("address", addr+".adnl").Msg("Starting server")
+		log.Info().Str("address", addr+".adnl").
+			Int("max_concurrent_requests", *FlagMaxConcurrentRequests).
+			Msg("Starting server")
 		if err = s.ListenAndServe(fmt.Sprintf("%s:%d", cfg.ListenIP, cfg.Port)); err != nil {
 			log.Fatal().Err(err).Msg("Failed to listen and serve")
 		}
@@ -407,7 +430,7 @@ func loadConfig() (*Config, error) {
 		}
 		cfg.Version = 1
 		cfg.PrivateKey = srvKey.Seed()
-		cfg.NetworkConfigURL = "https://ton.org/global.config.json"
+		cfg.NetworkConfigURL = "https://ton-blockchain.github.io/global.config.json"
 
 		cfg.ExternalIP, err = getPublicIP()
 		if err != nil {

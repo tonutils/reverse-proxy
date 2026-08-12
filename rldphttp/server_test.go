@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -18,9 +19,11 @@ import (
 )
 
 type mockRLDP struct {
-	mx      sync.Mutex
-	answers []tl.Serializable
-	sendErr error
+	mx          sync.Mutex
+	answers     []tl.Serializable
+	queryIDs    [][]byte
+	transferIDs [][]byte
+	sendErr     error
 }
 
 type blockingReadCloser struct {
@@ -55,11 +58,20 @@ func (m *mockRLDP) SetOnQuery(func([]byte, *rldp.Query) error) {}
 
 func (m *mockRLDP) SetOnDisconnect(func()) {}
 
-func (m *mockRLDP) SendAnswer(_ context.Context, _ uint64, _ uint32, _, _ []byte, answer tl.Serializable) error {
+func (m *mockRLDP) SendAnswer(
+	_ context.Context,
+	_ uint64,
+	_ uint32,
+	queryID,
+	transferID []byte,
+	answer tl.Serializable,
+) error {
 	m.mx.Lock()
 	defer m.mx.Unlock()
 
 	m.answers = append(m.answers, answer)
+	m.queryIDs = append(m.queryIDs, bytes.Clone(queryID))
+	m.transferIDs = append(m.transferIDs, bytes.Clone(transferID))
 	return m.sendErr
 }
 
@@ -85,6 +97,24 @@ func (m *mockRLDP) answerCount() int {
 	defer m.mx.Unlock()
 
 	return len(m.answers)
+}
+
+func (m *mockRLDP) setSendError(err error) {
+	m.mx.Lock()
+	m.sendErr = err
+	m.mx.Unlock()
+}
+
+func (m *mockRLDP) answerIDs(t *testing.T, i int) ([]byte, []byte) {
+	t.Helper()
+
+	m.mx.Lock()
+	defer m.mx.Unlock()
+
+	if len(m.answers) <= i {
+		t.Fatalf("expected answer %d, got %d answers", i, len(m.answers))
+	}
+	return bytes.Clone(m.queryIDs[i]), bytes.Clone(m.transferIDs[i])
 }
 
 func newTestRespWriter(sendErr error) (*respWriter, *writerBuff, *mockRLDP) {
@@ -149,6 +179,10 @@ func activeStream(t *testing.T, srv *Server, requestID []byte) *payloadStream {
 
 func activeRequestCount(srv *Server) int {
 	return srv.activeRequests.len()
+}
+
+func testRemoteAddr() *net.UDPAddr {
+	return &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1234}
 }
 
 func readPayloadPart(t *testing.T, wb *writerBuff, seqno int32) *PayloadPart {
@@ -285,7 +319,7 @@ func TestHandleRequestRejectsInvalidHeadersWithBadRequest(t *testing.T) {
 			}
 			rl := &mockRLDP{}
 
-			err := srv.handle(rl, "adnl-id", "127.0.0.1:1234")([]byte("transfer"), &rldp.Query{
+			err := srv.handleQuery(nil, nil, rl, "adnl-id", testRemoteAddr(), []byte("transfer"), &rldp.Query{
 				ID:            []byte("query-id-query-id-query-id-12"),
 				MaxAnswerSize: _RLDPMaxAnswerSize,
 				Timeout:       30,
@@ -718,7 +752,7 @@ func TestHandleGetPartRefreshesActiveRequestTTL(t *testing.T) {
 	})
 	rl := &mockRLDP{}
 
-	err := srv.handle(rl, "adnl-id", "127.0.0.1:1234")([]byte("transfer"), &rldp.Query{
+	err := srv.handleQuery(nil, nil, rl, "adnl-id", testRemoteAddr(), []byte("transfer"), &rldp.Query{
 		ID:            []byte("query-id-query-id-query-id-12"),
 		MaxAnswerSize: _RLDPMaxAnswerSize,
 		Timeout:       30,
@@ -763,7 +797,7 @@ func TestHandleGetPartSendAnswerErrorCleansActiveRequest(t *testing.T) {
 
 	sendErr := errors.New("send failed")
 	rl := &mockRLDP{sendErr: sendErr}
-	err := srv.handle(rl, "adnl-id", "127.0.0.1:1234")([]byte("transfer"), &rldp.Query{
+	err := srv.handleQuery(nil, nil, rl, "adnl-id", testRemoteAddr(), []byte("transfer"), &rldp.Query{
 		ID:            []byte("query-id-query-id-query-id-12"),
 		MaxAnswerSize: _RLDPMaxAnswerSize,
 		Timeout:       30,

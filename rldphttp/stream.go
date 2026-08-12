@@ -3,6 +3,7 @@ package rldphttp
 import (
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -10,9 +11,29 @@ type payloadStream struct {
 	nextSeqno int32
 	Data      io.ReadCloser
 	ValidTill time.Time
+	lease     *requestLease
 
-	mx     sync.Mutex
-	readMx sync.Mutex
+	mx         sync.Mutex
+	readMx     sync.Mutex
+	finishOnce sync.Once
+	continuing atomic.Bool
+}
+
+func (s *payloadStream) finish() {
+	s.finishOnce.Do(func() {
+		_ = s.Data.Close()
+		if s.lease != nil {
+			s.lease.release()
+		}
+	})
+}
+
+func (s *payloadStream) tryStartContinuation() bool {
+	return s.continuing.CompareAndSwap(false, true)
+}
+
+func (s *payloadStream) finishContinuation() {
+	s.continuing.Store(false)
 }
 
 type streamChunk struct {
